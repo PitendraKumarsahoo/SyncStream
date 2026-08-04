@@ -4,6 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { Server as SocketIOServer } from "socket.io";
 import { createServer as createViteServer } from "vite";
+import { validateRoomPassword } from "./server/middleware/auth.js";
 
 const getDirname = () => {
   try {
@@ -47,6 +48,7 @@ interface Room {
   category: string;
   isPublic: boolean;
   password?: string;
+  passwordHint?: string;
   hostId: string;
   hostName: string;
   hostAvatar: string;
@@ -173,6 +175,7 @@ async function startServer() {
     const roomList = Array.from(rooms.values()).map(r => ({
       ...r,
       passwordRequired: !!r.password,
+      passwordHint: r.passwordHint || undefined,
       password: undefined // Never send actual password to list
     }));
     res.json(roomList);
@@ -198,28 +201,33 @@ async function startServer() {
       });
     }
 
-    if (room.password && room.password.trim().length > 0) {
-      const expectedPassword = room.password.trim();
-      const providedPassword = (password || "").trim();
-
-      if (!providedPassword) {
+    const pwdValidation = validateRoomPassword(room.password, password);
+    if (!pwdValidation.valid) {
+      if (pwdValidation.error === "password_required") {
         return res.status(401).json({
           error: "password_required",
           message: "Password required to join this watch party.",
           passwordRequired: true,
+          passwordHint: room.passwordHint || undefined,
           room: {
             ...room,
             passwordRequired: true,
+            passwordHint: room.passwordHint || undefined,
             password: undefined
           }
         });
-      }
-
-      if (providedPassword !== expectedPassword) {
+      } else {
         return res.status(401).json({
           error: "invalid_password",
           message: "Incorrect password. Please verify and try again.",
-          passwordRequired: true
+          passwordRequired: true,
+          passwordHint: room.passwordHint || undefined,
+          room: {
+            ...room,
+            passwordRequired: true,
+            passwordHint: room.passwordHint || undefined,
+            password: undefined
+          }
         });
       }
     }
@@ -229,6 +237,7 @@ async function startServer() {
       room: {
         ...room,
         passwordRequired: !!room.password,
+        passwordHint: room.passwordHint || undefined,
         password: undefined
       }
     });
@@ -282,6 +291,7 @@ async function startServer() {
         category: payload.roomData.category || "Movies",
         isPublic: payload.roomData.isPublic !== false,
         password: payload.roomData.password || "",
+        passwordHint: payload.roomData.passwordHint || "",
         hostId: payload.user.id,
         hostName: payload.user.name,
         hostAvatar: payload.user.avatar,
@@ -338,14 +348,10 @@ async function startServer() {
         return;
       }
 
-      if (room.password && room.password.trim().length > 0) {
-        const expectedPassword = room.password.trim();
-        const providedPassword = (payload.password || "").trim();
-
-        if (!providedPassword || expectedPassword !== providedPassword) {
-          if (typeof callback === "function") callback({ success: false, error: "invalid_password" });
-          return;
-        }
+      const pwdValidation = validateRoomPassword(room.password, payload.password);
+      if (!pwdValidation.valid) {
+        if (typeof callback === "function") callback({ success: false, error: "invalid_password" });
+        return;
       }
 
       if (room.participants.length >= room.maxParticipants) {

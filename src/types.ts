@@ -57,6 +57,7 @@ export interface Room {
   category: 'Movies' | 'Tech & Talks' | 'Anime & Animation' | 'Gaming' | 'Music & Concerts' | 'Personal Uploads';
   isPublic: boolean;
   password?: string;
+  passwordHint?: string;
   passwordRequired?: boolean;
   hostId: string;
   hostName: string;

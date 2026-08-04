@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Lock, Eye, EyeOff, KeyRound, AlertCircle, Play, Sparkles } from 'lucide-react';
+import { X, Lock, Eye, EyeOff, KeyRound, AlertCircle, Play, Sparkles, HelpCircle } from 'lucide-react';
 import { Room } from '../types';
 
 interface JoinPasswordModalProps {
@@ -9,6 +9,7 @@ interface JoinPasswordModalProps {
   onJoin: (roomId: string, password: string) => void;
   error?: string | null;
   isSubmitting?: boolean;
+  onClearError?: () => void;
 }
 
 export const JoinPasswordModal: React.FC<JoinPasswordModalProps> = ({
@@ -17,7 +18,8 @@ export const JoinPasswordModal: React.FC<JoinPasswordModalProps> = ({
   room,
   onJoin,
   error,
-  isSubmitting = false
+  isSubmitting = false,
+  onClearError
 }) => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -87,6 +89,12 @@ export const JoinPasswordModal: React.FC<JoinPasswordModalProps> = ({
                 <>
                   <strong className="font-semibold text-rose-200 block">Invalid Password</strong>
                   <span>The password you entered is incorrect. Please double-check with the host and try again.</span>
+                  {room.passwordHint && (
+                    <div className="mt-2.5 pt-2 border-t border-rose-500/20 text-amber-300 flex items-center gap-1.5 font-medium">
+                      <HelpCircle className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+                      <span>Password Hint: <span className="italic text-amber-200 font-normal">{room.passwordHint}</span></span>
+                    </div>
+                  )}
                 </>
               ) : error === 'room_not_found' ? (
                 <>
@@ -120,7 +128,10 @@ export const JoinPasswordModal: React.FC<JoinPasswordModalProps> = ({
                 required
                 autoFocus
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  if (onClearError) onClearError();
+                }}
                 placeholder="Enter room password..."
                 className="w-full pl-4 pr-10 py-2.5 bg-zinc-950 border border-zinc-800 focus:border-amber-500 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none transition-colors"
               />

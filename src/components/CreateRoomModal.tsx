@@ -21,6 +21,7 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({
   const [category, setCategory] = useState<Room['category']>('Movies');
   const [isPublic, setIsPublic] = useState(true);
   const [password, setPassword] = useState('');
+  const [passwordHint, setPasswordHint] = useState('');
   const [maxParticipants, setMaxParticipants] = useState(25);
   const [mediaSourceType, setMediaSourceType] = useState<'preset' | 'custom' | 'upload'>('preset');
   const [selectedPreset, setSelectedPreset] = useState<MediaItem>(PRESET_MEDIA[0]);
@@ -70,6 +71,7 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({
       category,
       isPublic,
       password: isPublic ? '' : password,
+      passwordHint: isPublic ? '' : passwordHint,
       maxParticipants,
       media
     });
@@ -299,16 +301,28 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({
             </div>
 
             {!isPublic && (
-              <div>
-                <label className="block text-xs font-semibold text-zinc-300 mb-2">Room Password</label>
-                <input
-                  type="password"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Set password"
-                  className="w-full px-4 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-amber-500"
-                />
+              <div className="space-y-2">
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-300 mb-1">Room Password</label>
+                  <input
+                    type="password"
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Set password"
+                    className="w-full px-4 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-300 mb-1">Password Hint (Optional)</label>
+                  <input
+                    type="text"
+                    value={passwordHint}
+                    onChange={(e) => setPasswordHint(e.target.value)}
+                    placeholder="e.g. Favorite movie, or year"
+                    className="w-full px-4 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
               </div>
             )}
           </div>

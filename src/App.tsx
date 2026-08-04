@@ -96,11 +96,14 @@ export default function App() {
         setIsJoiningRoom(false);
         const roomObj = data.room || fallbackRoom || rooms.find(r => r.id === roomId);
 
-        if (!joinModalRoom) {
-          if (roomObj) setJoinModalRoom(roomObj);
-          setJoinModalError(data.error === 'invalid_password' ? 'invalid_password' : null);
-        } else {
+        if (roomObj) {
+          setJoinModalRoom(prev => prev ? { ...prev, ...roomObj } : roomObj);
+        }
+
+        if (data.error === 'invalid_password') {
           setJoinModalError('invalid_password');
+        } else {
+          setJoinModalError(null);
         }
         return;
       }
@@ -557,6 +560,7 @@ export default function App() {
         onJoin={(roomId, pwd) => performPreflightAndJoin(roomId, pwd, joinModalRoom || undefined)}
         error={joinModalError}
         isSubmitting={isJoiningRoom}
+        onClearError={() => setJoinModalError(null)}
       />
 
       <ProfileModal
