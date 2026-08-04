@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Lock, Eye, EyeOff, KeyRound, AlertCircle, Play, Sparkles, HelpCircle } from 'lucide-react';
+import { motion } from 'motion/react';
 import { Room } from '../types';
 
 interface JoinPasswordModalProps {
@@ -23,13 +24,21 @@ export const JoinPasswordModal: React.FC<JoinPasswordModalProps> = ({
 }) => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [shakeKey, setShakeKey] = useState(0);
 
   useEffect(() => {
     if (isOpen) {
       setPassword('');
       setShowPassword(false);
+      setShakeKey(0);
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    if (error) {
+      setShakeKey(prev => prev + 1);
+    }
+  }, [error]);
 
   if (!isOpen || !room) return null;
 
@@ -41,7 +50,14 @@ export const JoinPasswordModal: React.FC<JoinPasswordModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fadeIn">
-      <div className="bg-zinc-900 border border-zinc-800 w-full max-w-md rounded-3xl p-6 shadow-2xl relative">
+      <motion.div
+        key={shakeKey}
+        animate={shakeKey > 0 ? { x: [-12, 12, -8, 8, -4, 4, 0] } : {}}
+        transition={{ duration: 0.4, ease: "easeInOut" }}
+        className={`bg-zinc-900 border w-full max-w-md rounded-3xl p-6 shadow-2xl relative transition-colors ${
+          error ? 'border-rose-500/50 shadow-rose-500/10' : 'border-zinc-800'
+        }`}
+      >
         
         {/* Close button */}
         <button
@@ -133,7 +149,9 @@ export const JoinPasswordModal: React.FC<JoinPasswordModalProps> = ({
                   if (onClearError) onClearError();
                 }}
                 placeholder="Enter room password..."
-                className="w-full pl-4 pr-10 py-2.5 bg-zinc-950 border border-zinc-800 focus:border-amber-500 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none transition-colors"
+                className={`w-full pl-4 pr-10 py-2.5 bg-zinc-950 border rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none transition-colors ${
+                  error ? 'border-rose-500/80 focus:border-rose-500' : 'border-zinc-800 focus:border-amber-500'
+                }`}
               />
               <button
                 type="button"
@@ -164,7 +182,7 @@ export const JoinPasswordModal: React.FC<JoinPasswordModalProps> = ({
           </div>
         </form>
 
-      </div>
+      </motion.div>
     </div>
   );
 };

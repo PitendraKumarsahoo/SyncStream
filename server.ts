@@ -189,6 +189,7 @@ async function startServer() {
 
     if (!room) {
       return res.status(404).json({
+        success: false,
         error: "room_not_found",
         message: "This watch party room no longer exists or the link is invalid."
       });
@@ -196,6 +197,7 @@ async function startServer() {
 
     if (room.participants.length >= room.maxParticipants) {
       return res.status(409).json({
+        success: false,
         error: "room_full",
         message: "This room has reached its maximum participant capacity."
       });
@@ -205,6 +207,7 @@ async function startServer() {
     if (!pwdValidation.valid) {
       if (pwdValidation.error === "password_required") {
         return res.status(401).json({
+          success: false,
           error: "password_required",
           message: "Password required to join this watch party.",
           passwordRequired: true,
@@ -218,6 +221,7 @@ async function startServer() {
         });
       } else {
         return res.status(401).json({
+          success: false,
           error: "invalid_password",
           message: "Incorrect password. Please verify and try again.",
           passwordRequired: true,

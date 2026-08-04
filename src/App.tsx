@@ -41,6 +41,7 @@ export default function App() {
   const [isJoiningRoom, setIsJoiningRoom] = useState(false);
 
   const socketRef = useRef(socketService.getSocket());
+  const hasCheckedUrlParamRef = useRef(false);
 
   const addNotification = (title: string, message: string, type: SystemNotification['type'] = 'info') => {
     const notif: SystemNotification = {
@@ -58,6 +59,11 @@ export default function App() {
   const performPreflightAndJoin = async (roomId: string, password?: string, fallbackRoom?: Room) => {
     if (!user) {
       setShowAuthModal(true);
+      return;
+    }
+
+    // Do not trigger preflight or password prompt if user is ALREADY inside this active room
+    if (activeRoom && activeRoom.id === roomId) {
       return;
     }
 
@@ -138,8 +144,9 @@ export default function App() {
         if (Array.isArray(data)) {
           setRooms(data);
 
-          // Perform preflight check for invite link room parameter on initial load
-          if (targetRoomId) {
+          // Perform preflight check for invite link room parameter on initial load only
+          if (targetRoomId && !hasCheckedUrlParamRef.current && activeRoom?.id !== targetRoomId) {
+            hasCheckedUrlParamRef.current = true;
             const matching = data.find((r: Room) => r.id === targetRoomId);
             performPreflightAndJoin(targetRoomId, undefined, matching);
           }
@@ -398,6 +405,9 @@ export default function App() {
     if (activeRoom) {
       socketRef.current.emit('room:leave', { roomId: activeRoom.id });
       setActiveRoom(null);
+      setJoinModalRoom(null);
+      setJoinModalError(null);
+      hasCheckedUrlParamRef.current = false;
       setTab('explore');
       window.history.replaceState({}, '', window.location.pathname);
       addNotification('Left Room', 'You left the watch party session', 'info');
