@@ -158,45 +158,52 @@ export default function App() {
 
     socket.on('rooms:updated', (updatedRooms: Room[]) => {
       setRooms(updatedRooms);
-      if (activeRoom) {
-        const matching = updatedRooms.find(r => r.id === activeRoom.id);
-        if (matching) {
-          setActiveRoom(prev => prev ? {
-            ...matching,
-            playback: prev.playback
-          } : matching);
-        }
-      }
+      setActiveRoom(prev => {
+        if (!prev) return null;
+        const matching = updatedRooms.find(r => r.id === prev.id);
+        if (!matching) return prev;
+        return {
+          ...matching,
+          playback: prev.playback
+        };
+      });
     });
 
     socket.on('user:joined', (payload) => {
-      if (activeRoom) {
-        setActiveRoom(prev => prev ? {
-          ...prev,
-          participants: payload.participants,
-          messages: [...prev.messages, payload.systemMessage]
-        } : null);
-      }
+      setActiveRoom(prev => prev ? {
+        ...prev,
+        participants: payload.participants,
+        messages: [...prev.messages, payload.systemMessage]
+      } : null);
       addNotification('User Joined', `${payload.participant.name} joined the watch party`, 'info');
     });
 
     socket.on('user:left', (payload) => {
-      if (activeRoom) {
-        setActiveRoom(prev => prev ? {
-          ...prev,
-          participants: payload.participants,
-          messages: [...prev.messages, payload.systemMessage]
-        } : null);
-      }
+      setActiveRoom(prev => prev ? {
+        ...prev,
+        participants: payload.participants,
+        messages: [...prev.messages, payload.systemMessage]
+      } : null);
     });
 
     socket.on('playback:updated', (payload) => {
-      if (activeRoom) {
-        setActiveRoom(prev => prev ? {
-          ...prev,
-          playback: payload.playback
-        } : null);
-      }
+      setActiveRoom(prev => prev ? {
+        ...prev,
+        playback: payload.playback
+      } : null);
+    });
+
+    socket.on('playback:force-sync', (payload) => {
+      setActiveRoom(prev => prev ? {
+        ...prev,
+        playback: {
+          ...prev.playback,
+          currentTime: payload.currentTime,
+          isPlaying: payload.isPlaying,
+          playbackRate: payload.playbackRate !== undefined ? payload.playbackRate : prev.playback.playbackRate,
+          lastUpdated: payload.serverTimestamp || Date.now()
+        }
+      } : null);
     });
 
     socket.on('playback:drift-check', (payload) => {
@@ -205,24 +212,20 @@ export default function App() {
     });
 
     socket.on('room:media-changed', (payload) => {
-      if (activeRoom) {
-        setActiveRoom(prev => prev ? {
-          ...prev,
-          media: payload.media,
-          playback: payload.playback,
-          messages: [...prev.messages, payload.systemMessage]
-        } : null);
-      }
+      setActiveRoom(prev => prev ? {
+        ...prev,
+        media: payload.media,
+        playback: payload.playback,
+        messages: [...prev.messages, payload.systemMessage]
+      } : null);
       addNotification('Stream Updated', `Host changed media to ${payload.media.title}`, 'info');
     });
 
     socket.on('chat:received', (message) => {
-      if (activeRoom) {
-        setActiveRoom(prev => prev ? {
-          ...prev,
-          messages: [...prev.messages, message]
-        } : null);
-      }
+      setActiveRoom(prev => prev ? {
+        ...prev,
+        messages: [...prev.messages, message]
+      } : null);
     });
 
     socket.on('chat:floating-reaction', (payload) => {
@@ -239,21 +242,17 @@ export default function App() {
     });
 
     socket.on('participants:updated', (participants) => {
-      if (activeRoom) {
-        setActiveRoom(prev => prev ? { ...prev, participants } : null);
-      }
+      setActiveRoom(prev => prev ? { ...prev, participants } : null);
     });
 
     socket.on('host:transferred', (payload) => {
-      if (activeRoom) {
-        setActiveRoom(prev => prev ? {
-          ...prev,
-          hostId: payload.newHostId,
-          hostName: payload.newHostName,
-          participants: payload.participants,
-          messages: [...prev.messages, payload.systemMessage]
-        } : null);
-      }
+      setActiveRoom(prev => prev ? {
+        ...prev,
+        hostId: payload.newHostId,
+        hostName: payload.newHostName,
+        participants: payload.participants,
+        messages: [...prev.messages, payload.systemMessage]
+      } : null);
       addNotification('Host Privilege Transferred', `${payload.newHostName} is now the host`, 'success');
     });
 
@@ -268,6 +267,7 @@ export default function App() {
       socket.off('user:joined');
       socket.off('user:left');
       socket.off('playback:updated');
+      socket.off('playback:force-sync');
       socket.off('playback:drift-check');
       socket.off('room:media-changed');
       socket.off('chat:received');
@@ -428,6 +428,15 @@ export default function App() {
       currentTime,
       playbackRate
     });
+
+    if (action === 'seek' || action === 'play' || action === 'pause') {
+      socketRef.current.emit('playback:force-sync', {
+        roomId: activeRoom.id,
+        currentTime,
+        isPlaying: action === 'play' ? true : (action === 'pause' ? false : activeRoom.playback.isPlaying),
+        playbackRate
+      });
+    }
   };
 
   // Send Chat Message

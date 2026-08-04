@@ -443,6 +443,49 @@ async function startServer() {
         playback: room.playback,
         initiatedBy: participant.name
       });
+
+      // Always send playback:force-sync so all clients jump directly to exact timestamp
+      io.to(payload.roomId).emit("playback:force-sync", {
+        currentTime: payload.currentTime,
+        isPlaying,
+        playbackRate: room.playback.playbackRate,
+        serverTimestamp: Date.now(),
+        initiatedBy: participant.name
+      });
+    });
+
+    // Explicit force-sync event emitted by host/participants
+    socket.on("playback:force-sync", (payload: {
+      roomId: string;
+      currentTime: number;
+      isPlaying: boolean;
+      playbackRate?: number;
+    }) => {
+      const room = rooms.get(payload.roomId);
+      if (!room) return;
+
+      const participant = room.participants.find(p => p.socketId === socket.id || p.id === currentUser?.id);
+
+      room.playback = {
+        isPlaying: payload.isPlaying,
+        currentTime: payload.currentTime,
+        playbackRate: payload.playbackRate !== undefined ? payload.playbackRate : room.playback.playbackRate,
+        lastUpdated: Date.now()
+      };
+
+      io.to(payload.roomId).emit("playback:force-sync", {
+        currentTime: payload.currentTime,
+        isPlaying: payload.isPlaying,
+        playbackRate: room.playback.playbackRate,
+        serverTimestamp: Date.now(),
+        initiatedBy: participant?.name || 'Host'
+      });
+
+      io.to(payload.roomId).emit("playback:updated", {
+        action: 'seek',
+        playback: room.playback,
+        initiatedBy: participant?.name || 'Host'
+      });
     });
 
     // Time sync ping from active player to keep drift strictly < 0.05s and update server time
@@ -463,7 +506,7 @@ async function startServer() {
       }
     });
 
-    // Host updates room media / stream URL
+    // Host or room member updates room media / stream URL
     socket.on("room:update-media", (payload: {
       roomId: string;
       media: Room['media'];
@@ -471,8 +514,8 @@ async function startServer() {
       const room = rooms.get(payload.roomId);
       if (!room) return;
 
-      const participant = room.participants.find(p => p.socketId === socket.id);
-      if (!participant || !participant.isHost) return;
+      const participant = room.participants.find(p => p.socketId === socket.id || p.id === currentUser?.id);
+      if (!participant) return;
 
       room.media = payload.media;
       room.playback = {
@@ -487,7 +530,7 @@ async function startServer() {
         senderId: "system",
         senderName: "System",
         senderAvatar: "",
-        text: `Host changed stream video to "${payload.media.title}"`,
+        text: `Stream video updated to "${payload.media.title}" 🎬`,
         timestamp: Date.now(),
         type: "system"
       };

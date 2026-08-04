@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Share2, Copy, Check, Lock, Globe, Sparkles, RefreshCw, Radio, Layers, MessageSquare, Users } from 'lucide-react';
 import { Room, User, FloatingReaction, ChatMessage } from '../types';
 import { VideoPlayer } from './VideoPlayer';
@@ -7,6 +7,7 @@ import { ParticipantsList } from './ParticipantsList';
 import { VoiceChat } from './VoiceChat';
 import { FloatingReactions } from './FloatingReactions';
 import { PRESET_MEDIA } from '../data/presetMedia';
+import { socketService } from '../lib/socket';
 
 interface WatchPartyRoomProps {
   room: Room;
@@ -43,6 +44,26 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
   const [customMediaTitle, setCustomMediaTitle] = useState('');
 
   const isHost = room.hostId === currentUser?.id;
+
+  // Poll the video element's currentTime every 1s and compare to activeRoom.playback.currentTime
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const videoEl = document.querySelector('video');
+      if (videoEl && room.playback) {
+        const diff = Math.abs(videoEl.currentTime - room.playback.currentTime);
+        if (diff > 0.75) {
+          socketService.getSocket().emit('playback:force-sync', {
+            roomId: room.id,
+            currentTime: videoEl.currentTime,
+            isPlaying: !videoEl.paused,
+            playbackRate: videoEl.playbackRate
+          });
+        }
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [room.id, room.playback?.currentTime, room.playback?.isPlaying]);
 
   const shareUrl = `${window.location.origin}${window.location.pathname}?room=${room.id}`;
 

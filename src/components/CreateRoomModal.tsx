@@ -220,7 +220,7 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({
             {mediaSourceType === 'custom' && (
               <div className="space-y-3 bg-zinc-950 p-3.5 rounded-2xl border border-zinc-800">
                 <div>
-                  <label className="block text-[11px] text-zinc-400 mb-1">Direct Stream URL (MP4, HLS, YouTube)</label>
+                  <label className="block text-[11px] text-zinc-400 mb-1">Direct Stream URL (MP4, WebM, HLS, YouTube)</label>
                   <input
                     type="url"
                     value={customUrl}
@@ -228,6 +228,11 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({
                     placeholder="https://commondatastorage.googleapis.com/.../video.mp4"
                     className="w-full px-3.5 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-indigo-500"
                   />
+                  {customUrl.toLowerCase().includes('.mkv') && (
+                    <p className="text-[10px] text-amber-400 font-semibold mt-1">
+                      ⚠️ Note: `.mkv` files cannot be played natively in web browsers. Please use MP4, WebM or YouTube links for multi-device compatibility.
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="block text-[11px] text-zinc-400 mb-1">Stream Title</label>
@@ -246,10 +251,10 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({
               <div className="border-2 border-dashed border-zinc-800 hover:border-indigo-500/50 bg-zinc-950 rounded-2xl p-6 text-center transition-colors">
                 <Upload className="w-8 h-8 text-indigo-400 mx-auto mb-2" />
                 <p className="text-xs font-semibold text-white">Upload or Drag & Drop local video</p>
-                <p className="text-[10px] text-zinc-500 mt-0.5">Supports MP4, WebM, MOV files</p>
+                <p className="text-[10px] text-zinc-500 mt-0.5">Supports MP4, WebM files</p>
                 <input
                   type="file"
-                  accept="video/*"
+                  accept="video/mp4,video/webm,video/*"
                   onChange={handleFileUpload}
                   className="hidden"
                   id="file-upload-input"
@@ -261,9 +266,14 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({
                   Choose File
                 </label>
                 {uploadedFileName && (
-                  <p className="text-xs text-emerald-400 font-semibold mt-3 flex items-center justify-center gap-1">
-                    <Check className="w-3.5 h-3.5" /> Selected: {uploadedFileName}
-                  </p>
+                  <div className="mt-3">
+                    <p className="text-xs text-emerald-400 font-semibold flex items-center justify-center gap-1">
+                      <Check className="w-3.5 h-3.5" /> Selected: {uploadedFileName}
+                    </p>
+                    <p className="text-[10px] text-amber-400 mt-1">
+                      💡 Tip: Local uploads play locally in your browser session. For watch parties with online friends across devices, featured movies or YouTube links work best!
+                    </p>
+                  </div>
                 )}
               </div>
             )}

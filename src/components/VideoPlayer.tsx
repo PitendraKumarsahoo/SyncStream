@@ -1,7 +1,8 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Play, Pause, Volume2, VolumeX, Maximize, RotateCcw, FastForward, Sparkles, Radio, RefreshCw, Volume1 } from 'lucide-react';
-import { Room } from '../types';
+import { Play, Pause, Volume2, VolumeX, Maximize, RotateCcw, FastForward, Sparkles, Radio, RefreshCw, Volume1, AlertTriangle, Film } from 'lucide-react';
+import { Room, MediaItem } from '../types';
 import { socketService } from '../lib/socket';
+import { PRESET_MEDIA } from '../data/presetMedia';
 
 interface VideoPlayerProps {
   room: Room;
@@ -26,25 +27,43 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   const [isPlaying, setIsPlaying] = useState(room.playback.isPlaying);
   const [currentTime, setCurrentTime] = useState(room.playback.currentTime);
-  const [duration, setDuration] = useState(room.media.duration || 100);
+  const [duration, setDuration] = useState<number>(room.media.duration || 0);
   const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(room.playback.playbackRate || 1.0);
   const [showControls, setShowControls] = useState(true);
-  const [needsUserInteraction, setNeedsUserInteraction] = useState(false);
+  
+  // Audio unlock and video error states
+  const [needsAudioUnlock, setNeedsAudioUnlock] = useState(false);
+  const [hasVideoError, setHasVideoError] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [userHasUnlocked, setUserHasUnlocked] = useState(false);
+
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Reset video states on room media update
+  useEffect(() => {
+    setHasVideoError(false);
+    setErrorMessage('');
+    if (room.media.duration) {
+      setDuration(room.media.duration);
+    }
+  }, [room.media.url]);
 
   // Sync video element with room playback state
   useEffect(() => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || room.media.type === 'youtube') return;
 
     isRemoteUpdateRef.current = true;
 
     const targetTime = room.playback.currentTime;
+    setCurrentTime(targetTime);
+
     const diff = Math.abs(video.currentTime - targetTime);
 
-    if (diff > 0.6) {
+    // Lock-step force-sync when drift is > 0.4 seconds
+    if (diff > 0.4) {
       video.currentTime = targetTime;
     }
 
@@ -55,21 +74,25 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           playPromise
             .then(() => {
               setIsPlaying(true);
-              setNeedsUserInteraction(false);
+              setNeedsAudioUnlock(false);
             })
             .catch(() => {
-              // Try muted playback as fallback for strict browser autoplay policies
+              // Browser autoplay policy blocked unmuted audio -> try muted autoplay
               video.muted = true;
               setIsMuted(true);
               video
                 .play()
                 .then(() => {
                   setIsPlaying(true);
-                  setNeedsUserInteraction(true); // Show banner to unmute
+                  if (!userHasUnlocked) {
+                    setNeedsAudioUnlock(true);
+                  }
                 })
                 .catch(() => {
                   setIsPlaying(false);
-                  setNeedsUserInteraction(true);
+                  if (!userHasUnlocked) {
+                    setNeedsAudioUnlock(true);
+                  }
                 });
             })
             .finally(() => {
@@ -98,7 +121,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       video.playbackRate = room.playback.playbackRate;
       setPlaybackRate(room.playback.playbackRate);
     }
-  }, [room.playback]);
+  }, [room.playback.currentTime, room.playback.isPlaying, room.playback.playbackRate, room.playback.lastUpdated, room.media.type, userHasUnlocked]);
 
   // Periodic heartbeat sync ping to keep room time live
   useEffect(() => {
@@ -116,10 +139,22 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     return () => clearInterval(interval);
   }, [isPlaying, room.id]);
 
+  const handleLoadedMetadata = () => {
+    if (videoRef.current) {
+      const dur = videoRef.current.duration;
+      if (dur && !isNaN(dur) && isFinite(dur)) {
+        setDuration(dur);
+      }
+    }
+  };
+
   const handleTimeUpdate = () => {
     if (videoRef.current) {
       setCurrentTime(videoRef.current.currentTime);
-      setDuration(videoRef.current.duration || duration);
+      const dur = videoRef.current.duration;
+      if (dur && !isNaN(dur) && isFinite(dur) && duration !== dur) {
+        setDuration(dur);
+      }
     }
   };
 
@@ -137,14 +172,29 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   };
 
-  const handleUnlockAndPlay = () => {
-    setNeedsUserInteraction(false);
+  const handleVideoError = () => {
+    setHasVideoError(true);
+    setIsPlaying(false);
+    setNeedsAudioUnlock(false);
+
+    const url = room.media.url || '';
+    if (url.toLowerCase().endsWith('.mkv') || url.includes('.mkv?')) {
+      setErrorMessage('MKV format (.mkv) is not natively playable in web browsers. Please select a featured movie or provide a direct MP4/YouTube stream link.');
+    } else if (url.startsWith('blob:')) {
+      setErrorMessage('Local file blob URLs are only accessible on your local device. To watch together with friends across devices, select a featured movie or paste a public video link.');
+    } else {
+      setErrorMessage('Unable to play video stream. The media URL may be expired, broken, or restricted by browser CORS policy.');
+    }
+  };
+
+  const handleUnlockAudio = () => {
+    setUserHasUnlocked(true);
+    setNeedsAudioUnlock(false);
     const video = videoRef.current;
     if (video) {
       video.muted = false;
       setIsMuted(false);
       video.volume = volume || 1;
-      video.currentTime = room.playback.currentTime;
       video
         .play()
         .then(() => {
@@ -155,15 +205,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           video.muted = true;
           setIsMuted(true);
           video.play();
-          setIsPlaying(true);
         });
     }
   };
 
   const togglePlay = () => {
-    setNeedsUserInteraction(false);
+    if (hasVideoError) return;
+    setUserHasUnlocked(true);
+    setNeedsAudioUnlock(false);
     const nextState = !isPlaying;
     setIsPlaying(nextState);
+
     if (videoRef.current) {
       if (nextState) {
         videoRef.current
@@ -172,7 +224,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             onControlPlayback('play', videoRef.current!.currentTime);
           })
           .catch(() => {
-            setNeedsUserInteraction(true);
+            setNeedsAudioUnlock(true);
           });
       } else {
         videoRef.current.pause();
@@ -184,8 +236,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   };
 
   const handleSkip = (seconds: number) => {
-    setNeedsUserInteraction(false);
-    const newTime = Math.max(0, Math.min(duration, currentTime + seconds));
+    if (hasVideoError) return;
+    setUserHasUnlocked(true);
+    setNeedsAudioUnlock(false);
+    const newTime = Math.max(0, Math.min(duration || 1000, currentTime + seconds));
     setCurrentTime(newTime);
     if (videoRef.current) {
       videoRef.current.currentTime = newTime;
@@ -194,7 +248,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setNeedsUserInteraction(false);
+    if (hasVideoError) return;
+    setUserHasUnlocked(true);
+    setNeedsAudioUnlock(false);
     const newTime = parseFloat(e.target.value);
     setCurrentTime(newTime);
     if (videoRef.current) {
@@ -213,10 +269,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   const toggleMute = () => {
     if (videoRef.current) {
-      videoRef.current.muted = !isMuted;
-      setIsMuted(!isMuted);
-      if (needsUserInteraction && isMuted) {
-        setNeedsUserInteraction(false);
+      const nextMute = !isMuted;
+      videoRef.current.muted = nextMute;
+      setIsMuted(nextMute);
+      if (!nextMute) {
+        setUserHasUnlocked(true);
+        setNeedsAudioUnlock(false);
       }
     }
   };
@@ -228,8 +286,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       videoRef.current.volume = newVol;
       videoRef.current.muted = newVol === 0;
       setIsMuted(newVol === 0);
-      if (newVol > 0 && needsUserInteraction) {
-        setNeedsUserInteraction(false);
+      if (newVol > 0) {
+        setUserHasUnlocked(true);
+        setNeedsAudioUnlock(false);
       }
     }
   };
@@ -252,7 +311,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   };
 
   const formatTime = (secs: number) => {
-    if (isNaN(secs)) return '00:00';
+    if (!secs || isNaN(secs) || !isFinite(secs)) return '00:00';
     const m = Math.floor(secs / 60);
     const s = Math.floor(secs % 60);
     return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
@@ -277,8 +336,58 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       onMouseMove={handleMouseMove}
       className="relative aspect-video w-full rounded-3xl overflow-hidden bg-black border border-zinc-800 shadow-2xl group select-none flex items-center justify-center"
     >
-      {/* HTML5 Video or YouTube */}
-      {room.media.type === 'youtube' ? (
+      {/* Video stream, YouTube or Error State */}
+      {hasVideoError ? (
+        <div className="absolute inset-0 z-30 bg-zinc-950/95 p-6 flex flex-col items-center justify-center text-center max-w-lg mx-auto animate-fadeIn">
+          <div className="p-3.5 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-400 mb-3">
+            <AlertTriangle className="w-8 h-8" />
+          </div>
+          <h3 className="text-base sm:text-lg font-extrabold text-white mb-1 tracking-tight">
+            Stream Playback Error
+          </h3>
+          <p className="text-xs text-zinc-300 leading-relaxed mb-4">
+            {errorMessage}
+          </p>
+
+          <div className="w-full space-y-2">
+            <p className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider">
+              Pick a Featured Movie to Watch Now:
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              {PRESET_MEDIA.slice(0, 4).map((preset) => (
+                <button
+                  key={preset.url}
+                  onClick={() => {
+                    setHasVideoError(false);
+                    onControlPlayback('seek', 0);
+                    socketService.getSocket().emit('room:update-media', {
+                      roomId: room.id,
+                      media: preset
+                    });
+                  }}
+                  className="p-2 rounded-xl bg-zinc-900 hover:bg-indigo-950/60 border border-zinc-800 hover:border-indigo-500/50 text-left flex items-center gap-2 transition-all cursor-pointer"
+                >
+                  <img src={preset.posterUrl} alt={preset.title} className="w-8 h-8 rounded-lg object-cover" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[11px] font-bold text-white truncate">{preset.title}</p>
+                    <p className="text-[9px] text-indigo-400 font-semibold">1080p Stream</p>
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            {isHost && (
+              <button
+                onClick={onChangeMediaModal}
+                className="mt-3 w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-all shadow-lg flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <RefreshCw className="w-4 h-4" />
+                Open Custom Video Picker
+              </button>
+            )}
+          </div>
+        </div>
+      ) : room.media.type === 'youtube' ? (
         <iframe
           src={getYoutubeEmbedUrl(room.media.url)}
           title={room.media.title}
@@ -291,9 +400,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           ref={videoRef}
           src={room.media.url}
           poster={room.media.posterUrl}
+          onLoadedMetadata={handleLoadedMetadata}
           onTimeUpdate={handleTimeUpdate}
           onPlay={handleNativePlay}
           onPause={handleNativePause}
+          onError={handleVideoError}
           onEnded={() => {
             setIsPlaying(false);
             if (!isRemoteUpdateRef.current) {
@@ -301,31 +412,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             }
           }}
           playsInline
-          crossOrigin="anonymous"
           preload="auto"
           className="w-full h-full object-contain cursor-pointer"
           onClick={togglePlay}
         />
       )}
 
-      {/* Autoplay / Audio Unlock Banner Overlay */}
-      {needsUserInteraction && room.media.type !== 'youtube' && (
-        <div className="absolute inset-0 z-30 bg-black/75 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center animate-fadeIn">
-          <div className="p-4 rounded-3xl bg-indigo-600/20 border border-indigo-500/40 mb-3 animate-bounce">
-            <Volume1 className="w-8 h-8 text-indigo-400" />
-          </div>
-          <h3 className="text-base sm:text-lg font-black text-white tracking-tight mb-1">
-            Click to Play & Unmute Video Stream
-          </h3>
-          <p className="text-xs text-zinc-300 max-w-sm mb-4 leading-relaxed">
-            Your browser requires a user click to enable synchronized video audio for watch party members.
-          </p>
+      {/* Non-intrusive Floating Unmute Audio Pill */}
+      {needsAudioUnlock && !hasVideoError && room.media.type !== 'youtube' && (
+        <div className="absolute top-16 z-30 animate-bounce">
           <button
-            onClick={handleUnlockAndPlay}
-            className="px-6 py-3 rounded-2xl bg-gradient-to-r from-indigo-500 to-violet-600 hover:from-indigo-600 hover:to-violet-700 text-white font-extrabold text-xs sm:text-sm shadow-xl shadow-indigo-500/30 transition-all transform active:scale-95 flex items-center gap-2 cursor-pointer"
+            onClick={handleUnlockAudio}
+            className="px-4 py-2 rounded-full bg-indigo-600/90 hover:bg-indigo-500 text-white text-xs font-extrabold shadow-xl border border-indigo-400/50 backdrop-blur-md flex items-center gap-2 cursor-pointer transition-transform active:scale-95"
           >
-            <Play className="w-4 h-4 fill-white" />
-            <span>Start Synchronized Movie Stream</span>
+            <Volume1 className="w-4 h-4 text-indigo-200" />
+            <span>Click to Unmute Audio Stream</span>
           </button>
         </div>
       )}
@@ -343,6 +444,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           </div>
 
           <div className="hidden sm:flex items-center gap-2 text-xs text-white font-bold bg-black/50 px-3 py-1 rounded-full border border-white/10 backdrop-blur-md">
+            <Film className="w-3.5 h-3.5 text-indigo-400" />
             <span>{room.media.title}</span>
           </div>
         </div>
@@ -366,7 +468,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
       </div>
 
-      {/* Floating Reactions Bar (Overlay on Bottom Left) */}
+      {/* Floating Reactions Bar */}
       <div
         className={`absolute bottom-20 left-4 md:left-6 z-20 flex items-center gap-1.5 p-1.5 rounded-2xl bg-black/60 backdrop-blur-md border border-white/10 transition-opacity duration-300 ${
           showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
@@ -398,11 +500,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             step={0.1}
             value={currentTime}
             onChange={handleSeek}
-            className="w-full h-1.5 bg-zinc-700/80 hover:h-2.5 rounded-lg appearance-none cursor-pointer accent-indigo-500 transition-all"
+            disabled={hasVideoError}
+            className="w-full h-1.5 bg-zinc-700/80 hover:h-2.5 rounded-lg appearance-none cursor-pointer accent-indigo-500 transition-all disabled:opacity-50"
           />
           <div
             className="absolute left-0 top-0 bottom-0 bg-gradient-to-r from-indigo-500 to-violet-500 rounded-lg pointer-events-none h-1.5 group-hover/timeline:h-2.5 transition-all"
-            style={{ width: `${(currentTime / (duration || 1)) * 100}%` }}
+            style={{ width: `${((currentTime / (duration || 1)) * 100) || 0}%` }}
           />
         </div>
 
@@ -412,26 +515,29 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             {/* Play/Pause */}
             <button
               onClick={togglePlay}
-              className="p-2.5 rounded-2xl bg-indigo-600 text-white shadow-lg shadow-indigo-600/40 hover:bg-indigo-500 transition-all active:scale-95 cursor-pointer"
+              disabled={hasVideoError}
+              className="p-2.5 rounded-2xl bg-indigo-600 text-white shadow-lg shadow-indigo-600/40 hover:bg-indigo-500 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
               title={isPlaying ? 'Pause' : 'Play'}
             >
               {isPlaying ? <Pause className="w-5 h-5 fill-white" /> : <Play className="w-5 h-5 fill-white" />}
             </button>
 
-            {/* Skip Backward -10s ("Piche") */}
+            {/* Skip Backward -10s */}
             <button
               onClick={() => handleSkip(-10)}
-              className="p-2 rounded-xl bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-all active:scale-95 flex items-center gap-1 text-[11px] font-bold cursor-pointer"
+              disabled={hasVideoError}
+              className="p-2 rounded-xl bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-all active:scale-95 flex items-center gap-1 text-[11px] font-bold disabled:opacity-50 cursor-pointer"
               title="Rewind 10 seconds"
             >
               <RotateCcw className="w-3.5 h-3.5" />
               <span>-10s</span>
             </button>
 
-            {/* Skip Forward +10s ("Age") */}
+            {/* Skip Forward +10s */}
             <button
               onClick={() => handleSkip(10)}
-              className="p-2 rounded-xl bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-all active:scale-95 flex items-center gap-1 text-[11px] font-bold cursor-pointer"
+              disabled={hasVideoError}
+              className="p-2 rounded-xl bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-all active:scale-95 flex items-center gap-1 text-[11px] font-bold disabled:opacity-50 cursor-pointer"
               title="Fast Forward 10 seconds"
             >
               <FastForward className="w-3.5 h-3.5" />
