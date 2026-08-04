@@ -6,7 +6,8 @@ class SocketService {
 
   public connect(): Socket {
     if (!this.socket) {
-      this.socket = io({
+      const serverUrl = import.meta.env.VITE_API_URL || undefined;
+      this.socket = io(serverUrl, {
         transports: ['websocket', 'polling'],
         reconnection: true,
         reconnectionAttempts: 10,

@@ -5,8 +5,18 @@ import { fileURLToPath } from "url";
 import { Server as SocketIOServer } from "socket.io";
 import { createServer as createViteServer } from "vite";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const getDirname = () => {
+  try {
+    if (typeof import.meta !== "undefined" && typeof import.meta.url === "string" && import.meta.url.length > 0) {
+      return path.dirname(fileURLToPath(import.meta.url));
+    }
+  } catch (_e) {
+    // fallback to process.cwd()
+  }
+  return process.cwd();
+};
+
+const appDir = getDirname();
 
 interface Participant {
   id: string;
