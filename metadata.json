@@ -1,0 +1,6 @@
+{
+  "name": "SyncStream",
+  "description": "Enterprise Watch Party platform with synchronized video playback, real-time chat, voice calls, host controls, and room management.",
+  "requestFramePermissions": ["microphone", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
