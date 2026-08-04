@@ -414,7 +414,7 @@ async function startServer() {
       io.emit("rooms:updated", Array.from(rooms.values()));
     });
 
-    // Playback control sync (Play, Pause, Seek, Speed)
+    // Playback control sync (Play, Pause, Seek, Speed) - Shared Control for Host & Friends
     socket.on("playback:control", (payload: {
       roomId: string;
       action: 'play' | 'pause' | 'seek' | 'rateChange';
@@ -424,12 +424,8 @@ async function startServer() {
       const room = rooms.get(payload.roomId);
       if (!room) return;
 
-      // Check if current user is host
-      const participant = room.participants.find(p => p.socketId === socket.id);
-      if (!participant || !participant.isHost) {
-        // Non-hosts cannot control playback unless permission granted
-        return;
-      }
+      const participant = room.participants.find(p => p.socketId === socket.id || p.id === currentUser?.id);
+      if (!participant) return;
 
       const isPlaying = payload.action === 'play' ? true : (payload.action === 'pause' ? false : room.playback.isPlaying);
       const playbackRate = payload.playbackRate !== undefined ? payload.playbackRate : room.playback.playbackRate;
@@ -441,7 +437,7 @@ async function startServer() {
         lastUpdated: Date.now()
       };
 
-      // Broadcast playback sync to room members
+      // Broadcast playback sync to ALL room members
       io.to(payload.roomId).emit("playback:updated", {
         action: payload.action,
         playback: room.playback,
@@ -449,12 +445,12 @@ async function startServer() {
       });
     });
 
-    // Periodic time sync ping from host to keep drift strictly < 0.05s
+    // Time sync ping from active player to keep drift strictly < 0.05s and update server time
     socket.on("playback:ping", (payload: { roomId: string; currentTime: number; isPlaying: boolean }) => {
       const room = rooms.get(payload.roomId);
       if (!room) return;
-      const participant = room.participants.find(p => p.socketId === socket.id);
-      if (participant && participant.isHost) {
+      const participant = room.participants.find(p => p.socketId === socket.id || p.id === currentUser?.id);
+      if (participant) {
         room.playback.currentTime = payload.currentTime;
         room.playback.isPlaying = payload.isPlaying;
         room.playback.lastUpdated = Date.now();

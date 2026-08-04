@@ -160,7 +160,12 @@ export default function App() {
       setRooms(updatedRooms);
       if (activeRoom) {
         const matching = updatedRooms.find(r => r.id === activeRoom.id);
-        if (matching) setActiveRoom(matching);
+        if (matching) {
+          setActiveRoom(prev => prev ? {
+            ...matching,
+            playback: prev.playback
+          } : matching);
+        }
       }
     });
 

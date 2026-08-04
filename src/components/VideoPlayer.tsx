@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Play, Pause, Volume2, VolumeX, Maximize, RotateCcw, FastForward, Shield, Sparkles, Radio, Settings, Lock, RefreshCw, Layers } from 'lucide-react';
-import { Room, Participant } from '../types';
+import { Play, Pause, Volume2, VolumeX, Maximize, RotateCcw, FastForward, Sparkles, Radio, RefreshCw, Volume1 } from 'lucide-react';
+import { Room } from '../types';
+import { socketService } from '../lib/socket';
 
 interface VideoPlayerProps {
   room: Room;
@@ -21,6 +22,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const isRemoteUpdateRef = useRef(false);
 
   const [isPlaying, setIsPlaying] = useState(room.playback.isPlaying);
   const [currentTime, setCurrentTime] = useState(room.playback.currentTime);
@@ -29,6 +31,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(room.playback.playbackRate || 1.0);
   const [showControls, setShowControls] = useState(true);
+  const [needsUserInteraction, setNeedsUserInteraction] = useState(false);
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Sync video element with room playback state
@@ -36,20 +39,59 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     const video = videoRef.current;
     if (!video) return;
 
-    // Check drift vs room playback
+    isRemoteUpdateRef.current = true;
+
     const targetTime = room.playback.currentTime;
     const diff = Math.abs(video.currentTime - targetTime);
 
-    if (diff > 0.5) {
+    if (diff > 0.6) {
       video.currentTime = targetTime;
     }
 
-    if (room.playback.isPlaying && video.paused) {
-      video.play().catch(() => {});
-      setIsPlaying(true);
-    } else if (!room.playback.isPlaying && !video.paused) {
-      video.pause();
+    if (room.playback.isPlaying) {
+      if (video.paused) {
+        const playPromise = video.play();
+        if (playPromise !== undefined) {
+          playPromise
+            .then(() => {
+              setIsPlaying(true);
+              setNeedsUserInteraction(false);
+            })
+            .catch(() => {
+              // Try muted playback as fallback for strict browser autoplay policies
+              video.muted = true;
+              setIsMuted(true);
+              video
+                .play()
+                .then(() => {
+                  setIsPlaying(true);
+                  setNeedsUserInteraction(true); // Show banner to unmute
+                })
+                .catch(() => {
+                  setIsPlaying(false);
+                  setNeedsUserInteraction(true);
+                });
+            })
+            .finally(() => {
+              setTimeout(() => {
+                isRemoteUpdateRef.current = false;
+              }, 150);
+            });
+        }
+      } else {
+        setIsPlaying(true);
+        setTimeout(() => {
+          isRemoteUpdateRef.current = false;
+        }, 150);
+      }
+    } else {
+      if (!video.paused) {
+        video.pause();
+      }
       setIsPlaying(false);
+      setTimeout(() => {
+        isRemoteUpdateRef.current = false;
+      }, 150);
     }
 
     if (video.playbackRate !== room.playback.playbackRate) {
@@ -58,6 +100,22 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   }, [room.playback]);
 
+  // Periodic heartbeat sync ping to keep room time live
+  useEffect(() => {
+    if (!isPlaying) return;
+    const interval = setInterval(() => {
+      const video = videoRef.current;
+      if (video && !video.paused) {
+        socketService.getSocket().emit('playback:ping', {
+          roomId: room.id,
+          currentTime: video.currentTime,
+          isPlaying: true
+        });
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [isPlaying, room.id]);
+
   const handleTimeUpdate = () => {
     if (videoRef.current) {
       setCurrentTime(videoRef.current.currentTime);
@@ -65,44 +123,101 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   };
 
+  const handleNativePlay = () => {
+    setIsPlaying(true);
+    if (!isRemoteUpdateRef.current && videoRef.current) {
+      onControlPlayback('play', videoRef.current.currentTime);
+    }
+  };
+
+  const handleNativePause = () => {
+    setIsPlaying(false);
+    if (!isRemoteUpdateRef.current && videoRef.current) {
+      onControlPlayback('pause', videoRef.current.currentTime);
+    }
+  };
+
+  const handleUnlockAndPlay = () => {
+    setNeedsUserInteraction(false);
+    const video = videoRef.current;
+    if (video) {
+      video.muted = false;
+      setIsMuted(false);
+      video.volume = volume || 1;
+      video.currentTime = room.playback.currentTime;
+      video
+        .play()
+        .then(() => {
+          setIsPlaying(true);
+          onControlPlayback('play', video.currentTime);
+        })
+        .catch(() => {
+          video.muted = true;
+          setIsMuted(true);
+          video.play();
+          setIsPlaying(true);
+        });
+    }
+  };
+
   const togglePlay = () => {
-    if (!isHost) return; // Only host controls play/pause unless permission granted
+    setNeedsUserInteraction(false);
     const nextState = !isPlaying;
     setIsPlaying(nextState);
     if (videoRef.current) {
       if (nextState) {
-        videoRef.current.play();
-        onControlPlayback('play', videoRef.current.currentTime);
+        videoRef.current
+          .play()
+          .then(() => {
+            onControlPlayback('play', videoRef.current!.currentTime);
+          })
+          .catch(() => {
+            setNeedsUserInteraction(true);
+          });
       } else {
         videoRef.current.pause();
         onControlPlayback('pause', videoRef.current.currentTime);
       }
+    } else {
+      onControlPlayback(nextState ? 'play' : 'pause', currentTime);
     }
   };
 
+  const handleSkip = (seconds: number) => {
+    setNeedsUserInteraction(false);
+    const newTime = Math.max(0, Math.min(duration, currentTime + seconds));
+    setCurrentTime(newTime);
+    if (videoRef.current) {
+      videoRef.current.currentTime = newTime;
+    }
+    onControlPlayback('seek', newTime);
+  };
+
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!isHost) return;
+    setNeedsUserInteraction(false);
     const newTime = parseFloat(e.target.value);
     setCurrentTime(newTime);
     if (videoRef.current) {
       videoRef.current.currentTime = newTime;
-      onControlPlayback('seek', newTime);
     }
+    onControlPlayback('seek', newTime);
   };
 
   const handleRateChange = (rate: number) => {
-    if (!isHost) return;
     setPlaybackRate(rate);
     if (videoRef.current) {
       videoRef.current.playbackRate = rate;
-      onControlPlayback('rateChange', videoRef.current.currentTime, rate);
     }
+    onControlPlayback('rateChange', currentTime, rate);
   };
 
   const toggleMute = () => {
     if (videoRef.current) {
       videoRef.current.muted = !isMuted;
       setIsMuted(!isMuted);
+      if (needsUserInteraction && isMuted) {
+        setNeedsUserInteraction(false);
+      }
     }
   };
 
@@ -111,7 +226,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     setVolume(newVol);
     if (videoRef.current) {
       videoRef.current.volume = newVol;
+      videoRef.current.muted = newVol === 0;
       setIsMuted(newVol === 0);
+      if (newVol > 0 && needsUserInteraction) {
+        setNeedsUserInteraction(false);
+      }
     }
   };
 
@@ -139,17 +258,29 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
+  // Extract Youtube Embed URL safely
+  const getYoutubeEmbedUrl = (url: string) => {
+    let videoId = '';
+    if (url.includes('v=')) {
+      videoId = url.split('v=')[1]?.split('&')[0] || '';
+    } else if (url.includes('youtu.be/')) {
+      videoId = url.split('youtu.be/')[1]?.split('?')[0] || '';
+    } else {
+      videoId = url.split('/').pop() || '';
+    }
+    return `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&enablejsapi=1&controls=1`;
+  };
+
   return (
     <div
       ref={containerRef}
       onMouseMove={handleMouseMove}
       className="relative aspect-video w-full rounded-3xl overflow-hidden bg-black border border-zinc-800 shadow-2xl group select-none flex items-center justify-center"
     >
-      
       {/* HTML5 Video or YouTube */}
       {room.media.type === 'youtube' ? (
         <iframe
-          src={`https://www.youtube.com/embed/${room.media.url.split('v=')[1] || room.media.url.split('/').pop()}?autoplay=1&enablejsapi=1`}
+          src={getYoutubeEmbedUrl(room.media.url)}
           title={room.media.title}
           className="w-full h-full border-0 pointer-events-auto"
           allow="autoplay; encrypted-media; picture-in-picture"
@@ -161,11 +292,42 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           src={room.media.url}
           poster={room.media.posterUrl}
           onTimeUpdate={handleTimeUpdate}
-          onEnded={() => setIsPlaying(false)}
+          onPlay={handleNativePlay}
+          onPause={handleNativePause}
+          onEnded={() => {
+            setIsPlaying(false);
+            if (!isRemoteUpdateRef.current) {
+              onControlPlayback('pause', videoRef.current?.duration || currentTime);
+            }
+          }}
           playsInline
+          crossOrigin="anonymous"
+          preload="auto"
           className="w-full h-full object-contain cursor-pointer"
           onClick={togglePlay}
         />
+      )}
+
+      {/* Autoplay / Audio Unlock Banner Overlay */}
+      {needsUserInteraction && room.media.type !== 'youtube' && (
+        <div className="absolute inset-0 z-30 bg-black/75 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center animate-fadeIn">
+          <div className="p-4 rounded-3xl bg-indigo-600/20 border border-indigo-500/40 mb-3 animate-bounce">
+            <Volume1 className="w-8 h-8 text-indigo-400" />
+          </div>
+          <h3 className="text-base sm:text-lg font-black text-white tracking-tight mb-1">
+            Click to Play & Unmute Video Stream
+          </h3>
+          <p className="text-xs text-zinc-300 max-w-sm mb-4 leading-relaxed">
+            Your browser requires a user click to enable synchronized video audio for watch party members.
+          </p>
+          <button
+            onClick={handleUnlockAndPlay}
+            className="px-6 py-3 rounded-2xl bg-gradient-to-r from-indigo-500 to-violet-600 hover:from-indigo-600 hover:to-violet-700 text-white font-extrabold text-xs sm:text-sm shadow-xl shadow-indigo-500/30 transition-all transform active:scale-95 flex items-center gap-2 cursor-pointer"
+          >
+            <Play className="w-4 h-4 fill-white" />
+            <span>Start Synchronized Movie Stream</span>
+          </button>
+        </div>
       )}
 
       {/* Top Header Overlay */}
@@ -177,7 +339,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 text-xs font-bold shadow-lg backdrop-blur-md">
             <Radio className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
-            <span>LIVE SYNC</span>
+            <span>LIVE WATCH PARTY</span>
           </div>
 
           <div className="hidden sm:flex items-center gap-2 text-xs text-white font-bold bg-black/50 px-3 py-1 rounded-full border border-white/10 backdrop-blur-md">
@@ -185,7 +347,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           </div>
         </div>
 
-        {/* Sync Status Badge & Host Change Video */}
+        {/* Sync Status Badge & Change Stream */}
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 text-xs font-extrabold backdrop-blur-md">
             <Sparkles className="w-3.5 h-3.5" />
@@ -203,17 +365,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           )}
         </div>
       </div>
-
-      {/* Center Big Host Notice if Non-Host tries to play */}
-      {!isHost && !isPlaying && (
-        <div className="absolute inset-0 bg-black/50 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center z-10 pointer-events-none">
-          <Lock className="w-10 h-10 text-amber-400 mb-2" />
-          <h4 className="text-base font-bold text-white">Host Control Active</h4>
-          <p className="text-xs text-zinc-300 max-w-sm mt-1">
-            Playback is managed by the host ({room.hostName}). Sit back and enjoy the synchronized stream!
-          </p>
-        </div>
-      )}
 
       {/* Floating Reactions Bar (Overlay on Bottom Left) */}
       <div
@@ -245,7 +396,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             min={0}
             max={duration || 100}
             step={0.1}
-            disabled={!isHost}
             value={currentTime}
             onChange={handleSeek}
             className="w-full h-1.5 bg-zinc-700/80 hover:h-2.5 rounded-lg appearance-none cursor-pointer accent-indigo-500 transition-all"
@@ -258,29 +408,46 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
         {/* Controls Row */}
         <div className="flex items-center justify-between">
-          
-          <div className="flex items-center gap-3 md:gap-4">
+          <div className="flex items-center gap-2 sm:gap-3">
             {/* Play/Pause */}
             <button
               onClick={togglePlay}
-              disabled={!isHost}
-              className={`p-2.5 rounded-2xl bg-indigo-600 text-white shadow-lg shadow-indigo-600/40 hover:bg-indigo-500 transition-all cursor-pointer ${
-                !isHost ? 'opacity-60 cursor-not-allowed' : 'active:scale-95'
-              }`}
+              className="p-2.5 rounded-2xl bg-indigo-600 text-white shadow-lg shadow-indigo-600/40 hover:bg-indigo-500 transition-all active:scale-95 cursor-pointer"
+              title={isPlaying ? 'Pause' : 'Play'}
             >
               {isPlaying ? <Pause className="w-5 h-5 fill-white" /> : <Play className="w-5 h-5 fill-white" />}
             </button>
 
+            {/* Skip Backward -10s ("Piche") */}
+            <button
+              onClick={() => handleSkip(-10)}
+              className="p-2 rounded-xl bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-all active:scale-95 flex items-center gap-1 text-[11px] font-bold cursor-pointer"
+              title="Rewind 10 seconds"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>-10s</span>
+            </button>
+
+            {/* Skip Forward +10s ("Age") */}
+            <button
+              onClick={() => handleSkip(10)}
+              className="p-2 rounded-xl bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-all active:scale-95 flex items-center gap-1 text-[11px] font-bold cursor-pointer"
+              title="Fast Forward 10 seconds"
+            >
+              <FastForward className="w-3.5 h-3.5" />
+              <span>+10s</span>
+            </button>
+
             {/* Time Display */}
-            <div className="text-xs font-mono text-zinc-300 font-bold">
+            <div className="text-xs font-mono text-zinc-300 font-bold ml-1">
               <span>{formatTime(currentTime)}</span>
               <span className="text-zinc-500 mx-1">/</span>
               <span className="text-zinc-500">{formatTime(duration)}</span>
             </div>
 
             {/* Volume Control */}
-            <div className="hidden sm:flex items-center gap-2 group/vol">
-              <button onClick={toggleMute} className="text-zinc-300 hover:text-white">
+            <div className="hidden sm:flex items-center gap-2 group/vol ml-2">
+              <button onClick={toggleMute} className="text-zinc-300 hover:text-white cursor-pointer">
                 {isMuted || volume === 0 ? <VolumeX className="w-5 h-5 text-rose-400" /> : <Volume2 className="w-5 h-5" />}
               </button>
               <input
@@ -290,44 +457,39 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 step={0.05}
                 value={isMuted ? 0 : volume}
                 onChange={handleVolumeChange}
-                className="w-20 h-1 bg-zinc-700 rounded-lg appearance-none accent-indigo-500 cursor-pointer"
+                className="w-16 md:w-20 h-1 bg-zinc-700 rounded-lg appearance-none accent-indigo-500 cursor-pointer"
               />
             </div>
           </div>
 
           {/* Right Speed & Fullscreen */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             {/* Speed Selector */}
-            {isHost && (
-              <div className="flex items-center gap-1 bg-zinc-900/80 p-1 rounded-xl border border-zinc-800">
-                {[0.75, 1.0, 1.25, 1.5, 2.0].map((rate) => (
-                  <button
-                    key={rate}
-                    onClick={() => handleRateChange(rate)}
-                    className={`px-2 py-0.5 rounded-lg text-[10px] font-bold transition-all ${
-                      playbackRate === rate
-                        ? 'bg-indigo-600 text-white'
-                        : 'text-zinc-400 hover:text-white'
-                    }`}
-                  >
-                    {rate}x
-                  </button>
-                ))}
-              </div>
-            )}
+            <div className="hidden sm:flex items-center gap-1 bg-zinc-900/80 p-1 rounded-xl border border-zinc-800">
+              {[0.75, 1.0, 1.25, 1.5, 2.0].map((rate) => (
+                <button
+                  key={rate}
+                  onClick={() => handleRateChange(rate)}
+                  className={`px-2 py-0.5 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
+                    playbackRate === rate ? 'bg-indigo-600 text-white' : 'text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  {rate}x
+                </button>
+              ))}
+            </div>
 
             {/* Fullscreen Button */}
             <button
               onClick={toggleFullscreen}
               className="p-2 rounded-xl bg-zinc-900/80 hover:bg-zinc-800 text-zinc-300 hover:text-white transition-all cursor-pointer"
+              title="Toggle Fullscreen"
             >
               <Maximize className="w-5 h-5" />
             </button>
           </div>
-
         </div>
       </div>
-
     </div>
   );
 };
