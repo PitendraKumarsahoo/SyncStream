@@ -42,6 +42,16 @@ class SocketService {
     return this.socket;
   }
 
+  public joinRoom(
+    payload: { roomId: string; password?: string; user: { id: string; name: string; avatar: string } },
+    callback?: (response: { success: boolean; room?: any; error?: string }) => void
+  ) {
+    const socket = this.getSocket();
+    socket.emit('room:join', payload, (res: { success: boolean; room?: any; error?: string }) => {
+      if (callback) callback(res);
+    });
+  }
+
   public disconnect() {
     if (this.socket) {
       this.socket.disconnect();

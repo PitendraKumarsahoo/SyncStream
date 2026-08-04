@@ -44,8 +44,10 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
 
   const isHost = room.hostId === currentUser?.id;
 
+  const shareUrl = `${window.location.origin}${window.location.pathname}?room=${room.id}`;
+
   const handleCopyLink = () => {
-    navigator.clipboard.writeText(window.location.href);
+    navigator.clipboard.writeText(shareUrl);
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2000);
   };
@@ -230,7 +232,7 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
               <input
                 type="text"
                 readOnly
-                value={window.location.href}
+                value={shareUrl}
                 className="w-full px-3.5 py-2.5 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-indigo-300 font-mono"
               />
               <button
@@ -244,7 +246,7 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
 
             {room.passwordRequired && (
               <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs mb-4">
-                🔒 Password required for entry: <strong className="font-mono text-white ml-1">{room.password}</strong>
+                🔒 Password required for entry: <strong className="font-mono text-white ml-1">{room.password || '(Set by Host)'}</strong>
               </div>
             )}
 

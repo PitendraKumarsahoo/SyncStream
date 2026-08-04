@@ -6,7 +6,7 @@ import { CATEGORIES } from '../data/presetMedia';
 
 interface DashboardViewProps {
   rooms: Room[];
-  onJoinRoom: (roomId: string) => void;
+  onJoinRoom: (room: Room) => void;
   onCreateRoom: () => void;
   latency: number;
 }
@@ -66,7 +66,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
             {rooms.length > 0 && (
               <button
-                onClick={() => onJoinRoom(rooms[0].id)}
+                onClick={() => onJoinRoom(rooms[0])}
                 className="px-6 py-3 rounded-2xl bg-zinc-800/80 hover:bg-zinc-800 border border-zinc-700 text-white font-semibold text-xs transition-all cursor-pointer flex items-center gap-2"
               >
                 <Flame className="w-4 h-4 text-amber-400" />

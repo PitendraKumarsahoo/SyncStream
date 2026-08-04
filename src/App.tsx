@@ -7,6 +7,7 @@ import { AdminPanel } from './components/AdminPanel';
 import { AuthModal } from './components/AuthModal';
 import { CreateRoomModal } from './components/CreateRoomModal';
 import { ProfileModal } from './components/ProfileModal';
+import { JoinPasswordModal } from './components/JoinPasswordModal';
 import { NotificationToast } from './components/NotificationToast';
 import { Room, User, SystemNotification, FloatingReaction, WatchHistoryItem } from './types';
 import { socketService } from './lib/socket';
@@ -35,6 +36,9 @@ export default function App() {
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showCreateRoomModal, setShowCreateRoomModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
+  const [joinModalRoom, setJoinModalRoom] = useState<Room | null>(null);
+  const [joinModalError, setJoinModalError] = useState<string | null>(null);
+  const [isJoiningRoom, setIsJoiningRoom] = useState(false);
 
   const socketRef = useRef(socketService.getSocket());
 
@@ -50,12 +54,93 @@ export default function App() {
     setNotifications(prev => [notif, ...prev]);
   };
 
+  // Perform HTTP Pre-Flight Room Check before Socket Join
+  const performPreflightAndJoin = async (roomId: string, password?: string, fallbackRoom?: Room) => {
+    if (!user) {
+      setShowAuthModal(true);
+      return;
+    }
+
+    setIsJoiningRoom(true);
+
+    try {
+      const res = await fetch(`/api/rooms/${roomId}/preflight`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: password || '' })
+      });
+
+      const data = await res.json().catch(() => ({ error: 'server_error' }));
+
+      if (res.status === 404 || data.error === 'room_not_found') {
+        setIsJoiningRoom(false);
+        if (joinModalRoom) {
+          setJoinModalError('room_not_found');
+        } else {
+          addNotification('Room Not Found', 'This watch party is no longer active or the link is invalid.', 'warning');
+        }
+        return;
+      }
+
+      if (res.status === 409 || data.error === 'room_full') {
+        setIsJoiningRoom(false);
+        if (joinModalRoom) {
+          setJoinModalError('room_full');
+        } else {
+          addNotification('Room Full', 'This watch party has reached its maximum participant capacity.', 'warning');
+        }
+        return;
+      }
+
+      if (res.status === 401 || data.error === 'password_required' || data.error === 'invalid_password') {
+        setIsJoiningRoom(false);
+        const roomObj = data.room || fallbackRoom || rooms.find(r => r.id === roomId);
+
+        if (!joinModalRoom) {
+          if (roomObj) setJoinModalRoom(roomObj);
+          setJoinModalError(data.error === 'invalid_password' ? 'invalid_password' : null);
+        } else {
+          setJoinModalError('invalid_password');
+        }
+        return;
+      }
+
+      if (!res.ok) {
+        setIsJoiningRoom(false);
+        const err = data.message || data.error || 'Unable to join watch party';
+        if (joinModalRoom) {
+          setJoinModalError(err);
+        } else {
+          addNotification('Cannot Join', err, 'warning');
+        }
+        return;
+      }
+
+      // Pre-flight passed successfully, proceed to connect via WebSocket
+      handleJoinRoom(roomId, password);
+    } catch (err) {
+      setIsJoiningRoom(false);
+      addNotification('Connection Error', 'Failed to reach watch party server. Please check your connection.', 'warning');
+    }
+  };
+
   // Initial Rooms Fetch & Socket Event Listeners
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const targetRoomId = params.get('room') || params.get('roomId');
+
     fetch('/api/rooms')
       .then(res => res.json())
       .then(data => {
-        if (Array.isArray(data)) setRooms(data);
+        if (Array.isArray(data)) {
+          setRooms(data);
+
+          // Perform preflight check for invite link room parameter on initial load
+          if (targetRoomId) {
+            const matching = data.find((r: Room) => r.id === targetRoomId);
+            performPreflightAndJoin(targetRoomId, undefined, matching);
+          }
+        }
       })
       .catch(() => {});
 
@@ -206,26 +291,53 @@ export default function App() {
       if (res && res.success) {
         setActiveRoom(res.room);
         setTab('room');
+        const newUrl = `${window.location.origin}${window.location.pathname}?room=${res.room.id}`;
+        window.history.replaceState({ roomId: res.room.id }, '', newUrl);
         addNotification('Watch Party Created', `Party room "${res.room.name}" launched successfully`, 'success');
       }
     });
   };
 
-  // Join Watch Party
+  // Initiate Join Room (performs pre-flight check first)
+  const initiateJoinRoom = (room: Room) => {
+    if (!user) {
+      setShowAuthModal(true);
+      return;
+    }
+
+    if (room.passwordRequired || room.password) {
+      setJoinModalRoom(room);
+      setJoinModalError(null);
+    } else {
+      performPreflightAndJoin(room.id, undefined, room);
+    }
+  };
+
+  // Join Watch Party with Socket
   const handleJoinRoom = (roomId: string, password?: string) => {
     if (!user) {
       setShowAuthModal(true);
       return;
     }
 
-    socketRef.current.emit('room:join', {
+    setIsJoiningRoom(true);
+
+    socketService.joinRoom({
       roomId,
       password,
       user: { id: user.id, name: user.name, avatar: user.avatar }
     }, (res: any) => {
+      setIsJoiningRoom(false);
       if (res && res.success) {
         setActiveRoom(res.room);
         setTab('room');
+        setJoinModalRoom(null);
+        setJoinModalError(null);
+
+        // Sync browser URL parameter for invite links
+        const newUrl = `${window.location.origin}${window.location.pathname}?room=${res.room.id}`;
+        window.history.replaceState({ roomId: res.room.id }, '', newUrl);
+
         addNotification('Joined Watch Party', `Successfully joined ${res.room.name}`, 'success');
 
         // Add to watch history
@@ -245,7 +357,35 @@ export default function App() {
           watchHistory: [newHistoryItem, ...prev.watchHistory.filter(h => h.roomId !== res.room.id)]
         } : null);
       } else {
-        addNotification('Failed to Join', res.error || 'Could not join room', 'warning');
+        const rawError = res?.error || 'server_error';
+        if (rawError === 'invalid_password' || rawError === 'Incorrect room password') {
+          if (!joinModalRoom) {
+            const targetRoom = rooms.find(r => r.id === roomId);
+            if (targetRoom) {
+              setJoinModalRoom(targetRoom);
+            } else {
+              fetch(`/api/rooms/${roomId}`)
+                .then(r => r.json())
+                .then(data => {
+                  if (data && !data.error) setJoinModalRoom(data);
+                })
+                .catch(() => {});
+            }
+          }
+          setJoinModalError('invalid_password');
+        } else if (joinModalRoom) {
+          setJoinModalError(rawError);
+        } else {
+          if (rawError === 'room_not_found') {
+            addNotification('Room Not Found', 'This watch party is no longer active or the invite link has expired.', 'warning');
+          } else if (rawError === 'room_full') {
+            addNotification('Room Full', 'This watch party has reached its maximum participant capacity.', 'warning');
+          } else if (rawError === 'server_error') {
+            addNotification('Server Error', 'Failed to connect to the watch party due to a server network issue.', 'warning');
+          } else {
+            addNotification('Failed to Join', rawError, 'warning');
+          }
+        }
       }
     });
   };
@@ -256,6 +396,7 @@ export default function App() {
       socketRef.current.emit('room:leave', { roomId: activeRoom.id });
       setActiveRoom(null);
       setTab('explore');
+      window.history.replaceState({}, '', window.location.pathname);
       addNotification('Left Room', 'You left the watch party session', 'info');
     }
   };
@@ -349,7 +490,7 @@ export default function App() {
         {currentTab === 'explore' && (
           <DashboardView
             rooms={rooms}
-            onJoinRoom={(id) => handleJoinRoom(id)}
+            onJoinRoom={(room) => initiateJoinRoom(room)}
             onCreateRoom={() => setShowCreateRoomModal(true)}
             latency={latency}
           />
@@ -374,7 +515,10 @@ export default function App() {
         {currentTab === 'history' && (
           <WatchHistoryView
             history={user?.watchHistory || []}
-            onRejoin={(id) => handleJoinRoom(id)}
+            onRejoin={(id) => {
+              const r = rooms.find(x => x.id === id);
+              performPreflightAndJoin(id, undefined, r);
+            }}
           />
         )}
 
@@ -401,6 +545,18 @@ export default function App() {
         onClose={() => setShowCreateRoomModal(false)}
         onCreateRoom={handleCreateRoom}
         user={user}
+      />
+
+      <JoinPasswordModal
+        isOpen={!!joinModalRoom}
+        onClose={() => {
+          setJoinModalRoom(null);
+          setJoinModalError(null);
+        }}
+        room={joinModalRoom}
+        onJoin={(roomId, pwd) => performPreflightAndJoin(roomId, pwd, joinModalRoom || undefined)}
+        error={joinModalError}
+        isSubmitting={isJoiningRoom}
       />
 
       <ProfileModal

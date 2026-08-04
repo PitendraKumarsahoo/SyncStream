@@ -4,7 +4,7 @@ import { Room } from '../types';
 
 interface RoomCardProps {
   room: Room;
-  onJoin: (roomId: string) => void;
+  onJoin: (room: Room) => void;
 }
 
 export const RoomCard: React.FC<RoomCardProps> = ({ room, onJoin }) => {
@@ -42,7 +42,7 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room, onJoin }) => {
         {/* Hover Quick Play overlay button */}
         <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/40 backdrop-blur-[2px]">
           <button
-            onClick={() => onJoin(room.id)}
+            onClick={() => onJoin(room)}
             className="p-3.5 rounded-2xl bg-indigo-600 text-white shadow-xl shadow-indigo-600/40 scale-90 group-hover:scale-100 transition-transform cursor-pointer"
           >
             <Play className="w-6 h-6 fill-white" />
@@ -93,7 +93,7 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room, onJoin }) => {
 
         {/* Join Button */}
         <button
-          onClick={() => onJoin(room.id)}
+          onClick={() => onJoin(room)}
           className="w-full py-2.5 rounded-xl bg-zinc-800 hover:bg-gradient-to-r hover:from-indigo-600 hover:to-violet-600 text-zinc-200 hover:text-white text-xs font-bold transition-all shadow-md cursor-pointer flex items-center justify-center gap-2"
         >
           <span>Join Watch Party</span>

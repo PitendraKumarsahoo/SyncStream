@@ -178,18 +178,64 @@ async function startServer() {
     res.json(roomList);
   });
 
-  // Get specific room by ID
-  app.get("/api/rooms/:id", (req, res) => {
-    const room = rooms.get(req.params.id);
+  // Pre-flight room validation endpoint
+  const handlePreflight = (req: express.Request, res: express.Response) => {
+    const roomId = req.params.id;
+    const password = (req.body?.password || req.query?.password || "") as string;
+    const room = rooms.get(roomId);
+
     if (!room) {
-      return res.status(404).json({ error: "Room not found" });
+      return res.status(404).json({
+        error: "room_not_found",
+        message: "This watch party room no longer exists or the link is invalid."
+      });
     }
-    return res.json({
-      ...room,
-      passwordRequired: !!room.password,
-      password: undefined
+
+    if (room.participants.length >= room.maxParticipants) {
+      return res.status(409).json({
+        error: "room_full",
+        message: "This room has reached its maximum participant capacity."
+      });
+    }
+
+    if (room.password && room.password.trim().length > 0) {
+      const expectedPassword = room.password.trim();
+      const providedPassword = (password || "").trim();
+
+      if (!providedPassword) {
+        return res.status(401).json({
+          error: "password_required",
+          message: "Password required to join this watch party.",
+          passwordRequired: true,
+          room: {
+            ...room,
+            passwordRequired: true,
+            password: undefined
+          }
+        });
+      }
+
+      if (providedPassword !== expectedPassword) {
+        return res.status(401).json({
+          error: "invalid_password",
+          message: "Incorrect password. Please verify and try again.",
+          passwordRequired: true
+        });
+      }
+    }
+
+    return res.status(200).json({
+      valid: true,
+      room: {
+        ...room,
+        passwordRequired: !!room.password,
+        password: undefined
+      }
     });
-  });
+  };
+
+  app.post("/api/rooms/:id/preflight", handlePreflight);
+  app.get("/api/rooms/:id/preflight", handlePreflight);
 
   // Admin stats endpoint
   app.get("/api/admin/stats", (_req, res) => {
@@ -288,17 +334,22 @@ async function startServer() {
     }, callback) => {
       const room = rooms.get(payload.roomId);
       if (!room) {
-        if (typeof callback === "function") callback({ success: false, error: "Room does not exist" });
+        if (typeof callback === "function") callback({ success: false, error: "room_not_found" });
         return;
       }
 
-      if (room.password && room.password !== payload.password) {
-        if (typeof callback === "function") callback({ success: false, error: "Incorrect room password" });
-        return;
+      if (room.password && room.password.trim().length > 0) {
+        const expectedPassword = room.password.trim();
+        const providedPassword = (payload.password || "").trim();
+
+        if (!providedPassword || expectedPassword !== providedPassword) {
+          if (typeof callback === "function") callback({ success: false, error: "invalid_password" });
+          return;
+        }
       }
 
       if (room.participants.length >= room.maxParticipants) {
-        if (typeof callback === "function") callback({ success: false, error: "Room is full" });
+        if (typeof callback === "function") callback({ success: false, error: "room_full" });
         return;
       }
 
