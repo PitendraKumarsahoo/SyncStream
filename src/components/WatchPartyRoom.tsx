@@ -45,26 +45,6 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
 
   const isHost = room.hostId === currentUser?.id;
 
-  // Poll the video element's currentTime every 1s and compare to activeRoom.playback.currentTime
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const videoEl = document.querySelector('video');
-      if (videoEl && room.playback) {
-        const diff = Math.abs(videoEl.currentTime - room.playback.currentTime);
-        if (diff > 0.75) {
-          socketService.getSocket().emit('playback:force-sync', {
-            roomId: room.id,
-            currentTime: videoEl.currentTime,
-            isPlaying: !videoEl.paused,
-            playbackRate: videoEl.playbackRate
-          });
-        }
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [room.id, room.playback?.currentTime, room.playback?.isPlaying]);
-
   const shareUrl = `${window.location.origin}${window.location.pathname}?room=${room.id}`;
 
   const handleCopyLink = () => {

@@ -285,6 +285,7 @@ async function startServer() {
         isHost: true,
         isMuted: false,
         isDeafened: false,
+        isBuffering: false,
         joinedAt: new Date().toISOString()
       };
 
@@ -375,6 +376,7 @@ async function startServer() {
         isHost,
         isMuted: false,
         isDeafened: false,
+        isBuffering: false,
         joinedAt: new Date().toISOString()
       };
 
@@ -596,6 +598,20 @@ async function startServer() {
         p.isDeafened = payload.isDeafened;
 
         io.to(payload.roomId).emit("participants:updated", room.participants);
+      }
+    });
+
+    // Participant stream buffering status update
+    socket.on("participant:buffering", (payload: { roomId: string; isBuffering: boolean }) => {
+      const room = rooms.get(payload.roomId);
+      if (!room || !currentUser) return;
+
+      const p = room.participants.find(part => part.socketId === socket.id || part.id === currentUser?.id);
+      if (p) {
+        if (p.isBuffering !== payload.isBuffering) {
+          p.isBuffering = payload.isBuffering;
+          io.to(payload.roomId).emit("participants:updated", room.participants);
+        }
       }
     });
 

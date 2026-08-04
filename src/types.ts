@@ -18,6 +18,7 @@ export interface Participant {
   isHost: boolean;
   isMuted: boolean;
   isDeafened: boolean;
+  isBuffering?: boolean;
   joinedAt: string;
   connectionQuality?: 'excellent' | 'good' | 'fair';
 }

@@ -57,12 +57,15 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
     isRemoteUpdateRef.current = true;
 
-    const targetTime = room.playback.currentTime;
+    const elapsed = (room.playback.isPlaying && room.playback.lastUpdated)
+      ? Math.max(0, (Date.now() - room.playback.lastUpdated) / 1000)
+      : 0;
+    const targetTime = room.playback.currentTime + elapsed;
     setCurrentTime(targetTime);
 
     const diff = Math.abs(video.currentTime - targetTime);
 
-    // Lock-step force-sync when drift is > 0.4 seconds
+    // Lock-step sync when drift is > 0.4 seconds
     if (diff > 0.4) {
       video.currentTime = targetTime;
     }
@@ -160,6 +163,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   const handleNativePlay = () => {
     setIsPlaying(true);
+    socketService.getSocket().emit('participant:buffering', { roomId: room.id, isBuffering: false });
     if (!isRemoteUpdateRef.current && videoRef.current) {
       onControlPlayback('play', videoRef.current.currentTime);
     }
@@ -167,9 +171,18 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   const handleNativePause = () => {
     setIsPlaying(false);
+    socketService.getSocket().emit('participant:buffering', { roomId: room.id, isBuffering: false });
     if (!isRemoteUpdateRef.current && videoRef.current) {
       onControlPlayback('pause', videoRef.current.currentTime);
     }
+  };
+
+  const handleWaiting = () => {
+    socketService.getSocket().emit('participant:buffering', { roomId: room.id, isBuffering: true });
+  };
+
+  const handleCanPlay = () => {
+    socketService.getSocket().emit('participant:buffering', { roomId: room.id, isBuffering: false });
   };
 
   const handleVideoError = () => {
@@ -311,10 +324,18 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   };
 
   const formatTime = (secs: number) => {
-    if (!secs || isNaN(secs) || !isFinite(secs)) return '00:00';
-    const m = Math.floor(secs / 60);
-    const s = Math.floor(secs % 60);
-    return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
+    if (!secs || isNaN(secs) || !isFinite(secs) || secs < 0) return '00:00';
+    const totalSecs = Math.floor(secs);
+    const h = Math.floor(totalSecs / 3600);
+    const m = Math.floor((totalSecs % 3600) / 60);
+    const s = totalSecs % 60;
+
+    const pad = (num: number) => (num < 10 ? `0${num}` : `${num}`);
+
+    if (h > 0) {
+      return `${pad(h)}:${pad(m)}:${pad(s)}`;
+    }
+    return `${pad(m)}:${pad(s)}`;
   };
 
   // Extract Youtube Embed URL safely
@@ -404,9 +425,14 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           onTimeUpdate={handleTimeUpdate}
           onPlay={handleNativePlay}
           onPause={handleNativePause}
+          onWaiting={handleWaiting}
+          onStalled={handleWaiting}
+          onCanPlay={handleCanPlay}
+          onPlaying={handleCanPlay}
           onError={handleVideoError}
           onEnded={() => {
             setIsPlaying(false);
+            socketService.getSocket().emit('participant:buffering', { roomId: room.id, isBuffering: false });
             if (!isRemoteUpdateRef.current) {
               onControlPlayback('pause', videoRef.current?.duration || currentTime);
             }
