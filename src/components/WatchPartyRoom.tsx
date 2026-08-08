@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowLeft, Share2, Copy, Check, Lock, Globe, Sparkles, RefreshCw, Radio, Layers, MessageSquare, Users } from 'lucide-react';
+import { ArrowLeft, Share2, Copy, Check, Lock, Globe, Sparkles, RefreshCw, Radio, Layers, MessageSquare, Users, Activity } from 'lucide-react';
 import { Room, User, FloatingReaction, ChatMessage } from '../types';
 import { VideoPlayer } from './VideoPlayer';
 import { LiveChat } from './LiveChat';
@@ -8,6 +8,7 @@ import { VoiceChat } from './VoiceChat';
 import { FloatingReactions } from './FloatingReactions';
 import { PRESET_MEDIA } from '../data/presetMedia';
 import { socketService } from '../lib/socket';
+import { validateMediaUrl } from '../lib/mediaValidation';
 
 interface WatchPartyRoomProps {
   room: Room;
@@ -51,16 +52,16 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
 
   const isHost = room.hostId === currentUser?.id;
 
-  // Handler for video ref: explicitly listens to 'timeupdate' and 'seeking' events, emitting timestamps to server with robust debouncing
+  // Throttled timeupdate and seeking ping handlers
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
-    // Throttle timeupdate pings to max once every 1000ms to prevent server spamming
+    // Throttle timeupdate pings to max once every 2000ms to keep room time live without server spam
     const handleTimeUpdate = () => {
       if (!video.paused && !isSyncingRef.current) {
         const now = Date.now();
-        if (now - lastEmitTimeRef.current >= 1000) {
+        if (now - lastEmitTimeRef.current >= 2000) {
           lastEmitTimeRef.current = now;
           socketService.getSocket().emit('playback:ping', {
             roomId: room.id,
@@ -89,31 +90,6 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
     };
   }, [room.id]);
 
-  // Refined conditional sync logic comparing local currentTime against server time with jitter smoothing
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    // Calculate projected server currentTime accounting for network elapsed time
-    const elapsed = (room.playback.isPlaying && room.playback.lastUpdated)
-      ? Math.max(0, (Date.now() - room.playback.lastUpdated) / 1000)
-      : 0;
-    const serverTime = room.playback.currentTime + elapsed;
-    const delta = Math.abs(video.currentTime - serverTime);
-
-    // Only update local currentTime if delta exceeds 0.5s to eliminate high-latency playback jitter
-    if (delta > 0.5) {
-      isSyncingRef.current = true;
-      video.currentTime = serverTime;
-      
-      const timer = setTimeout(() => {
-        isSyncingRef.current = false;
-      }, 200);
-
-      return () => clearTimeout(timer);
-    }
-  }, [room.playback.currentTime, room.playback.isPlaying, room.playback.lastUpdated]);
-
   const shareUrl = `${window.location.origin}${window.location.pathname}?room=${room.id}`;
 
   const handleCopyLink = () => {
@@ -129,14 +105,25 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
 
   const handleCustomMediaSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!customMediaUrl) return;
+    setUploadError('');
+
+    const validation = validateMediaUrl(customMediaUrl);
+    if (!validation.isValid) {
+      setUploadError(validation.error || 'Invalid video URL. Please provide a valid HTTP/HTTPS link.');
+      return;
+    }
+
     onChangeMedia({
-      type: customMediaUrl.includes('youtube.com') || customMediaUrl.includes('youtu.be') ? 'youtube' : 'mp4',
-      url: customMediaUrl,
-      title: customMediaTitle || 'Custom Stream Stream',
+      type: validation.type || 'mp4',
+      url: validation.url || customMediaUrl.trim(),
+      title: customMediaTitle.trim() || (validation.type === 'youtube' ? 'YouTube Stream' : 'Custom Video Stream'),
       duration: 300,
-      posterUrl: 'https://images.unsplash.com/photo-1517604931442-7e0c8ed2963c?w=800&auto=format&fit=crop&q=80'
+      posterUrl: validation.type === 'youtube'
+        ? 'https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?w=800&auto=format&fit=crop&q=80'
+        : 'https://images.unsplash.com/photo-1517604931442-7e0c8ed2963c?w=800&auto=format&fit=crop&q=80'
     });
+    setCustomMediaUrl('');
+    setCustomMediaTitle('');
     setShowChangeMediaModal(false);
   };
 
@@ -156,14 +143,17 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
         body: formData
       });
 
-      if (!response.ok) {
-        throw new Error('Upload failed with status ' + response.status);
-      }
+      const data = await response.json().catch(() => null);
 
-      const data = await response.json();
-      if (data.success && data.url) {
+      if (response.ok && data?.success && data?.url) {
+        const validation = validateMediaUrl(data.url);
+        if (!validation.isValid) {
+          setUploadError(`Uploaded video URL validation failed: ${validation.error}`);
+          return;
+        }
+
         onChangeMedia({
-          type: 'mp4',
+          type: validation.type || 'mp4',
           url: data.url,
           title: data.title || file.name.replace(/\.[^/.]+$/, ""),
           duration: 300,
@@ -171,11 +161,13 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
         });
         setShowChangeMediaModal(false);
       } else {
-        throw new Error(data.error || 'Failed to upload video');
+        const errDetail = data?.error || (response.status ? `Server status ${response.status}` : 'Upload failed');
+        console.warn('Server upload issue:', errDetail);
+        setUploadError(`Failed to upload video: ${errDetail}. Please ensure file is under 500MB or use a direct URL.`);
       }
     } catch (err: any) {
       console.error('Video upload error:', err);
-      setUploadError('Failed to upload video file to watch party server. Please try a smaller file or direct link.');
+      setUploadError('Failed to upload video to watch party server. Please check network connection or use a direct URL.');
     } finally {
       setIsUploading(false);
     }
@@ -476,6 +468,42 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
           </div>
         </div>
       )}
+
+      {/* Performance Sync Drift Overlay (Bottom Right) */}
+      <div
+        id="sync-drift-performance-overlay"
+        className="fixed bottom-4 right-4 z-40 px-3 py-2 rounded-2xl bg-zinc-950/90 backdrop-blur-md border border-zinc-800/90 shadow-2xl flex items-center gap-2.5 text-xs select-none hover:bg-zinc-900 transition-all cursor-default"
+        title={`Current Latency / Drift: ${syncDrift < 1 ? Math.round(syncDrift * 1000) + ' ms' : syncDrift.toFixed(2) + ' s'}`}
+      >
+        <div className="relative flex items-center justify-center">
+          <span className={`w-2.5 h-2.5 rounded-full ${
+            syncDrift < 0.2 ? 'bg-emerald-500' : syncDrift < 0.8 ? 'bg-amber-500' : 'bg-rose-500'
+          }`} />
+          <span className={`absolute w-3.5 h-3.5 rounded-full animate-ping opacity-75 ${
+            syncDrift < 0.2 ? 'bg-emerald-400' : syncDrift < 0.8 ? 'bg-amber-400' : 'bg-rose-400'
+          }`} />
+        </div>
+
+        <div className="flex items-center gap-1.5 font-mono">
+          <Activity className={`w-3.5 h-3.5 ${
+            syncDrift < 0.2 ? 'text-emerald-400' : syncDrift < 0.8 ? 'text-amber-400' : 'text-rose-400'
+          }`} />
+          <span className="text-zinc-400 text-[11px]">Sync Drift:</span>
+          <span className={`font-bold text-[11px] ${
+            syncDrift < 0.2 ? 'text-emerald-400' : syncDrift < 0.8 ? 'text-amber-300' : 'text-rose-400'
+          }`}>
+            {syncDrift < 1 ? `${Math.round(syncDrift * 1000)} ms` : `${syncDrift.toFixed(2)}s`}
+          </span>
+        </div>
+
+        <span className={`text-[10px] font-sans font-bold px-1.5 py-0.5 rounded-md uppercase tracking-wider ${
+          syncDrift < 0.2 ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
+          syncDrift < 0.8 ? 'bg-amber-500/10 text-amber-300 border border-amber-500/20' :
+          'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+        }`}>
+          {syncDrift < 0.2 ? 'Optimal' : syncDrift < 0.8 ? 'Fair' : 'High'}
+        </span>
+      </div>
 
     </div>
   );

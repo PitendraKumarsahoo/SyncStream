@@ -251,6 +251,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     const nextState = !isPlaying;
     setIsPlaying(nextState);
 
+    // Prevent native onplay/onpause from emitting a duplicate socket message
+    isRemoteUpdateRef.current = true;
+    setTimeout(() => {
+      isRemoteUpdateRef.current = false;
+    }, 300);
+
     if (videoRef.current) {
       if (nextState) {
         videoRef.current
@@ -259,7 +265,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             onControlPlayback('play', videoRef.current!.currentTime);
           })
           .catch(() => {
-            setNeedsAudioUnlock(true);
+            // If browser blocks unmuted play, try muted play & show unmute button
+            if (videoRef.current) {
+              videoRef.current.muted = true;
+              setIsMuted(true);
+              videoRef.current.play().then(() => {
+                onControlPlayback('play', videoRef.current!.currentTime);
+                setNeedsAudioUnlock(true);
+              }).catch(() => {
+                setNeedsAudioUnlock(true);
+              });
+            }
           });
       } else {
         videoRef.current.pause();
@@ -276,6 +292,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     setNeedsAudioUnlock(false);
     const newTime = Math.max(0, Math.min(duration || 1000, currentTime + seconds));
     setCurrentTime(newTime);
+
+    isRemoteUpdateRef.current = true;
+    setTimeout(() => {
+      isRemoteUpdateRef.current = false;
+    }, 300);
+
     if (videoRef.current) {
       videoRef.current.currentTime = newTime;
     }
@@ -288,6 +310,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     setNeedsAudioUnlock(false);
     const newTime = parseFloat(e.target.value);
     setCurrentTime(newTime);
+
+    isRemoteUpdateRef.current = true;
+    setTimeout(() => {
+      isRemoteUpdateRef.current = false;
+    }, 300);
+
     if (videoRef.current) {
       videoRef.current.currentTime = newTime;
     }

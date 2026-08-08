@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { X, Film, Lock, Globe, Upload, Sparkles, Check, Link as LinkIcon, Users, Play } from 'lucide-react';
 import { Room, MediaItem, User } from '../types';
 import { PRESET_MEDIA, CATEGORIES } from '../data/presetMedia';
+import { validateMediaUrl } from '../lib/mediaValidation';
 
 interface CreateRoomModalProps {
   isOpen: boolean;
@@ -51,20 +52,22 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({
         body: formData
       });
 
-      if (!response.ok) {
-        throw new Error('Upload failed with status ' + response.status);
-      }
+      const data = await response.json().catch(() => null);
 
-      const data = await response.json();
-      if (data.success && data.url) {
+      if (response.ok && data?.success && data?.url) {
         setUploadedServerUrl(data.url);
+        setUploadError('');
         if (!name) setName(`Watch Party: ${file.name.replace(/\.[^/.]+$/, "")}`);
       } else {
-        throw new Error(data.error || 'Failed to upload video');
+        const errDetail = data?.error || (response.status ? `Server status ${response.status}` : 'Upload failed');
+        console.warn('Server upload error:', errDetail);
+        setUploadedServerUrl('');
+        setUploadError(`Failed to upload video: ${errDetail}. Please ensure file is under 500MB or paste a direct video URL.`);
       }
     } catch (err: any) {
       console.error('Video upload error:', err);
-      setUploadError('Failed to upload video to watch party server. Please try again or use a direct URL.');
+      setUploadedServerUrl('');
+      setUploadError('Failed to upload video to watch party server. Please check network connection or use a direct URL / Featured Movie.');
     } finally {
       setIsUploading(false);
     }
@@ -75,17 +78,29 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({
 
     let media: MediaItem = selectedPreset;
 
-    if (mediaSourceType === 'custom' && customUrl) {
+    if (mediaSourceType === 'custom') {
+      const validation = validateMediaUrl(customUrl);
+      if (!validation.isValid) {
+        setUploadError(validation.error || 'Please enter a valid video URL.');
+        return;
+      }
       media = {
-        type: customUrl.includes('youtube.com') || customUrl.includes('youtu.be') ? 'youtube' : 'mp4',
-        url: customUrl,
-        title: customTitle || 'Shared Video Stream',
+        type: validation.type || 'mp4',
+        url: validation.url || customUrl.trim(),
+        title: customTitle.trim() || (validation.type === 'youtube' ? 'YouTube Stream' : 'Shared Video Stream'),
         duration: 300,
-        posterUrl: 'https://images.unsplash.com/photo-1517604931442-7e0c8ed2963c?w=800&auto=format&fit=crop&q=80'
+        posterUrl: validation.type === 'youtube'
+          ? 'https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?w=800&auto=format&fit=crop&q=80'
+          : 'https://images.unsplash.com/photo-1517604931442-7e0c8ed2963c?w=800&auto=format&fit=crop&q=80'
       };
     } else if (mediaSourceType === 'upload' && uploadedServerUrl) {
+      const validation = validateMediaUrl(uploadedServerUrl);
+      if (!validation.isValid) {
+        setUploadError(validation.error || 'Uploaded file URL is invalid.');
+        return;
+      }
       media = {
-        type: 'mp4',
+        type: validation.type || 'mp4',
         url: uploadedServerUrl,
         title: uploadedFileName ? uploadedFileName.replace(/\.[^/.]+$/, "") : 'Watch Party Shared Video',
         duration: 600,

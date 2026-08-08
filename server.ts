@@ -167,7 +167,8 @@ async function startServer() {
     transports: ["websocket", "polling"]
   });
 
-  app.use(express.json());
+  app.use(express.json({ limit: "500mb" }));
+  app.use(express.urlencoded({ limit: "500mb", extended: true }));
 
   // Set up video uploads directory
   const uploadsDir = path.join(process.cwd(), "public", "uploads");
@@ -192,25 +193,37 @@ async function startServer() {
   });
 
   // Serve uploaded video files with range header support & CORS
-  app.use("/uploads", express.static(uploadsDir, {
+  const staticUploadsHandler = express.static(uploadsDir, {
     acceptRanges: true,
     setHeaders: (res) => {
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
     }
-  }));
+  });
+
+  app.use("/uploads", staticUploadsHandler);
+  app.use("/public/uploads", staticUploadsHandler);
 
   // Endpoint to upload local video files for watch parties
-  app.post("/api/upload-video", upload.single("video"), (req, res) => {
-    if (!req.file) {
-      return res.status(400).json({ success: false, error: "No video file provided." });
-    }
-    const fileUrl = `/uploads/${req.file.filename}`;
-    return res.json({
-      success: true,
-      url: fileUrl,
-      title: req.file.originalname.replace(/\.[^/.]+$/, ""),
-      filename: req.file.filename
+  app.post("/api/upload-video", (req, res) => {
+    upload.single("video")(req, res, (err) => {
+      if (err) {
+        console.error("Multer upload error:", err);
+        const message = err instanceof multer.MulterError
+          ? `Upload error: ${err.message}`
+          : (err.message || "Failed to upload video file.");
+        return res.status(400).json({ success: false, error: message });
+      }
+      if (!req.file) {
+        return res.status(400).json({ success: false, error: "No video file provided." });
+      }
+      const fileUrl = `/uploads/${req.file.filename}`;
+      return res.json({
+        success: true,
+        url: fileUrl,
+        title: req.file.originalname.replace(/\.[^/.]+$/, ""),
+        filename: req.file.filename
+      });
     });
   });
 
@@ -411,6 +424,32 @@ async function startServer() {
         joinedAt: new Date().toISOString()
       };
 
+      let media = payload.roomData.media;
+      if (!media || !media.url || typeof media.url !== "string" || !media.url.trim()) {
+        media = {
+          type: "mp4",
+          url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+          title: "Big Buck Bunny (HD)",
+          duration: 596,
+          posterUrl: "https://images.unsplash.com/photo-1517604931442-7e0c8ed2963c?w=800&auto=format&fit=crop&q=80"
+        };
+      } else {
+        const url = media.url.trim();
+        let mediaType: "mp4" | "youtube" | "hls" | "audio" = media.type || "mp4";
+        if (url.includes("youtube.com") || url.includes("youtu.be")) {
+          mediaType = "youtube";
+        } else if (url.includes(".m3u8")) {
+          mediaType = "hls";
+        }
+        media = {
+          type: mediaType,
+          url,
+          title: (media.title || "Watch Party Stream").trim(),
+          duration: media.duration || 300,
+          posterUrl: media.posterUrl || "https://images.unsplash.com/photo-1517604931442-7e0c8ed2963c?w=800&auto=format&fit=crop&q=80"
+        };
+      }
+
       const newRoom: Room = {
         id: roomId,
         name: payload.roomData.name || "Watch Party",
@@ -424,13 +463,7 @@ async function startServer() {
         hostAvatar: payload.user.avatar,
         createdAt: new Date().toISOString(),
         maxParticipants: payload.roomData.maxParticipants || 20,
-        media: payload.roomData.media || {
-          type: "mp4",
-          url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-          title: "Big Buck Bunny (HD)",
-          duration: 596,
-          posterUrl: "https://images.unsplash.com/photo-1517604931442-7e0c8ed2963c?w=800&auto=format&fit=crop&q=80"
-        },
+        media,
         playback: {
           isPlaying: false,
           currentTime: 0,
@@ -651,14 +684,44 @@ async function startServer() {
     socket.on("room:update-media", (payload: {
       roomId: string;
       media: Room['media'];
-    }) => {
+    }, callback?: (res: { success: boolean; error?: string; room?: Room }) => void) => {
       const room = rooms.get(payload.roomId);
-      if (!room) return;
+      if (!room) {
+        if (typeof callback === "function") callback({ success: false, error: "Room not found" });
+        return;
+      }
 
       const participant = room.participants.find(p => p.socketId === socket.id || p.id === currentUser?.id);
-      if (!participant) return;
+      if (!participant) {
+        if (typeof callback === "function") callback({ success: false, error: "Not a room participant" });
+        return;
+      }
 
-      room.media = payload.media;
+      // Media URL validation check
+      if (!payload.media || !payload.media.url || typeof payload.media.url !== "string" || !payload.media.url.trim()) {
+        if (typeof callback === "function") callback({ success: false, error: "Invalid or empty media source URL." });
+        return;
+      }
+
+      const url = payload.media.url.trim();
+      let mediaType: "mp4" | "youtube" | "hls" | "audio" = payload.media.type || "mp4";
+      if (url.includes("youtube.com") || url.includes("youtu.be")) {
+        mediaType = "youtube";
+      } else if (url.includes(".m3u8")) {
+        mediaType = "hls";
+      }
+
+      const sanitizedMedia: Room['media'] = {
+        type: mediaType,
+        url,
+        title: (payload.media.title || "Watch Party Stream").trim(),
+        duration: payload.media.duration || 300,
+        posterUrl: payload.media.posterUrl || (mediaType === "youtube"
+          ? "https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?w=800&auto=format&fit=crop&q=80"
+          : "https://images.unsplash.com/photo-1517604931442-7e0c8ed2963c?w=800&auto=format&fit=crop&q=80")
+      };
+
+      room.media = sanitizedMedia;
       room.playback = {
         isPlaying: false,
         currentTime: 0,
@@ -671,20 +734,35 @@ async function startServer() {
         senderId: "system",
         senderName: "System",
         senderAvatar: "",
-        text: `Stream video updated to "${payload.media.title}" 🎬`,
+        text: `${participant.name} updated stream to "${sanitizedMedia.title}" 🎬`,
         timestamp: Date.now(),
         type: "system"
       };
 
       room.messages.push(sysMessage);
 
+      // Broadcast room:media-changed event to ALL clients connected in the room
       io.to(payload.roomId).emit("room:media-changed", {
         media: room.media,
         playback: room.playback,
         systemMessage: sysMessage
       });
 
+      // Force playback reset for all participants
+      io.to(payload.roomId).emit("playback:force-sync", {
+        currentTime: 0,
+        isPlaying: false,
+        playbackRate: 1.0,
+        serverTimestamp: Date.now(),
+        initiatedBy: participant.name
+      });
+
+      // Broadcast room state update globally
       io.emit("rooms:updated", Array.from(rooms.values()));
+
+      if (typeof callback === "function") {
+        callback({ success: true, room });
+      }
     });
 
     // Send chat message

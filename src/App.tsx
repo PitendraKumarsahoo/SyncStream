@@ -41,9 +41,14 @@ export default function App() {
   const [isJoiningRoom, setIsJoiningRoom] = useState(false);
 
   const socketRef = useRef(socketService.getSocket());
+  const userRef = useRef(user);
   const hasCheckedUrlParamRef = useRef(false);
   const isSyncLockedRef = useRef(false);
   const lastPingTimestampRef = useRef<number>(0);
+
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
 
   const addNotification = (title: string, message: string, type: SystemNotification['type'] = 'info') => {
     const notif: SystemNotification = {
@@ -164,9 +169,10 @@ export default function App() {
         if (!prev) return null;
         const matching = updatedRooms.find(r => r.id === prev.id);
         if (!matching) return prev;
+        const mediaUrlChanged = matching.media.url !== prev.media.url;
         return {
           ...matching,
-          playback: prev.playback
+          playback: mediaUrlChanged ? matching.playback : prev.playback
         };
       });
     });
@@ -189,8 +195,8 @@ export default function App() {
     });
 
     socket.on('playback:updated', (payload) => {
-      // Skip frequent background updates if sync lock is active to prevent video jumps
-      if (isSyncLockedRef.current) return;
+      // If action was initiated by local user, local state was already updated optimistically
+      if (payload.initiatedBy && payload.initiatedBy === userRef.current?.name) return;
 
       setActiveRoom(prev => prev ? {
         ...prev,
@@ -199,13 +205,8 @@ export default function App() {
     });
 
     socket.on('playback:force-sync', (payload) => {
-      // Prevent rapid overlapping sync events from causing video jumps
-      if (isSyncLockedRef.current) return;
-
-      isSyncLockedRef.current = true;
-      setTimeout(() => {
-        isSyncLockedRef.current = false;
-      }, 800);
+      // If action was initiated by local user, local state was already updated optimistically
+      if (payload.initiatedBy && payload.initiatedBy === userRef.current?.name) return;
 
       setActiveRoom(prev => prev ? {
         ...prev,
@@ -439,19 +440,35 @@ export default function App() {
   // Playback Control Sync
   const handleControlPlayback = (action: 'play' | 'pause' | 'seek' | 'rateChange', currentTime: number, playbackRate?: number) => {
     if (!activeRoom) return;
+
+    const nextIsPlaying = action === 'play' ? true : (action === 'pause' ? false : activeRoom.playback.isPlaying);
+    const nextRate = playbackRate !== undefined ? playbackRate : activeRoom.playback.playbackRate;
+
+    // Immediately update local state without waiting for server round-trip to eliminate user-perception lag
+    setActiveRoom(prev => prev ? {
+      ...prev,
+      playback: {
+        ...prev.playback,
+        currentTime,
+        isPlaying: nextIsPlaying,
+        playbackRate: nextRate,
+        lastUpdated: Date.now()
+      }
+    } : null);
+
     socketRef.current.emit('playback:control', {
       roomId: activeRoom.id,
       action,
       currentTime,
-      playbackRate
+      playbackRate: nextRate
     });
 
     if (action === 'seek' || action === 'play' || action === 'pause') {
       socketRef.current.emit('playback:force-sync', {
         roomId: activeRoom.id,
         currentTime,
-        isPlaying: action === 'play' ? true : (action === 'pause' ? false : activeRoom.playback.isPlaying),
-        playbackRate
+        isPlaying: nextIsPlaying,
+        playbackRate: nextRate
       });
     }
   };
@@ -501,6 +518,10 @@ export default function App() {
     socketRef.current.emit('room:update-media', {
       roomId: activeRoom.id,
       media
+    }, (res: any) => {
+      if (res && !res.success) {
+        addNotification('Media Update Failed', res.error || 'Failed to update watch party media', 'warning');
+      }
     });
   };
 
