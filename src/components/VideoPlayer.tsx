@@ -442,7 +442,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         <video
           ref={videoRef}
           src={getVideoSourceUrl()}
-          crossOrigin="anonymous"
           poster={room.media.posterUrl}
           onLoadedMetadata={handleLoadedMetadata}
           onTimeUpdate={handleTimeUpdate}

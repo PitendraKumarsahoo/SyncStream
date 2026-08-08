@@ -42,6 +42,8 @@ export default function App() {
 
   const socketRef = useRef(socketService.getSocket());
   const hasCheckedUrlParamRef = useRef(false);
+  const isSyncLockedRef = useRef(false);
+  const lastPingTimestampRef = useRef<number>(0);
 
   const addNotification = (title: string, message: string, type: SystemNotification['type'] = 'info') => {
     const notif: SystemNotification = {
@@ -187,6 +189,9 @@ export default function App() {
     });
 
     socket.on('playback:updated', (payload) => {
+      // Skip frequent background updates if sync lock is active to prevent video jumps
+      if (isSyncLockedRef.current) return;
+
       setActiveRoom(prev => prev ? {
         ...prev,
         playback: payload.playback
@@ -194,6 +199,14 @@ export default function App() {
     });
 
     socket.on('playback:force-sync', (payload) => {
+      // Prevent rapid overlapping sync events from causing video jumps
+      if (isSyncLockedRef.current) return;
+
+      isSyncLockedRef.current = true;
+      setTimeout(() => {
+        isSyncLockedRef.current = false;
+      }, 800);
+
       setActiveRoom(prev => prev ? {
         ...prev,
         playback: {
@@ -277,20 +290,24 @@ export default function App() {
     };
   }, [activeRoom]);
 
-  // Host playback periodic ping to maintain exact time sync
+  // Host playback periodic ping to maintain exact time sync with throttled emission
   useEffect(() => {
     if (!activeRoom || !user || activeRoom.hostId !== user.id) return;
 
     const interval = setInterval(() => {
-      socketRef.current.emit('playback:ping', {
-        roomId: activeRoom.id,
-        currentTime: activeRoom.playback.currentTime,
-        isPlaying: activeRoom.playback.isPlaying
-      });
+      const now = Date.now();
+      if (now - lastPingTimestampRef.current >= 2000) {
+        lastPingTimestampRef.current = now;
+        socketRef.current.emit('playback:ping', {
+          roomId: activeRoom.id,
+          currentTime: activeRoom.playback.currentTime,
+          isPlaying: activeRoom.playback.isPlaying
+        });
+      }
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [activeRoom, user]);
+  }, [activeRoom?.id, activeRoom?.hostId, activeRoom?.playback?.isPlaying, user?.id]);
 
   // Create Watch Party
   const handleCreateRoom = (roomData: Partial<Room>) => {
