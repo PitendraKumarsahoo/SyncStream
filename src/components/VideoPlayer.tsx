@@ -41,6 +41,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [hasVideoError, setHasVideoError] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [userHasUnlocked, setUserHasUnlocked] = useState(false);
+  const [isUsingProxy, setIsUsingProxy] = useState(false);
 
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -48,10 +49,20 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   useEffect(() => {
     setHasVideoError(false);
     setErrorMessage('');
+    setIsUsingProxy(false);
     if (room.media.duration) {
       setDuration(room.media.duration);
     }
   }, [room.media.url]);
+
+  const getVideoSourceUrl = () => {
+    const rawUrl = room.media.url || '';
+    if (!rawUrl) return '';
+    if (isUsingProxy && (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) && !rawUrl.includes('/api/proxy-stream')) {
+      return `/api/proxy-stream?url=${encodeURIComponent(rawUrl)}`;
+    }
+    return rawUrl;
+  };
 
   // Sync video element with room playback state
   useEffect(() => {
@@ -189,17 +200,25 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   };
 
   const handleVideoError = () => {
+    const url = room.media.url || '';
+
+    // If direct stream URL failed and we haven't tried proxying yet, attempt proxy fallback automatically
+    if (!isUsingProxy && (url.startsWith('http://') || url.startsWith('https://')) && !url.includes('/api/proxy-stream')) {
+      console.log('Direct video load failed, attempting CORS proxy stream...');
+      setIsUsingProxy(true);
+      return;
+    }
+
     setHasVideoError(true);
     setIsPlaying(false);
     setNeedsAudioUnlock(false);
 
-    const url = room.media.url || '';
     if (url.toLowerCase().endsWith('.mkv') || url.includes('.mkv?')) {
-      setErrorMessage('MKV format (.mkv) is not natively playable in web browsers. Please select a featured movie or provide a direct MP4/YouTube stream link.');
+      setErrorMessage('MKV format (.mkv) is not natively playable in web browsers. Please select a featured movie or upload an MP4/WebM file.');
     } else if (url.startsWith('blob:')) {
-      setErrorMessage('Local file blob URLs are only accessible on your local device. To watch together with friends across devices, select a featured movie or paste a public video link.');
+      setErrorMessage('Local file blob URLs cannot be viewed across different devices. Use "Open Custom Video Picker" to upload the video file to the watch party server so everyone can stream together!');
     } else {
-      setErrorMessage('Unable to play video stream. The media URL may be expired, broken, or restricted by browser CORS policy.');
+      setErrorMessage('Unable to play video stream. The media URL may be expired, broken, or restricted by server CORS policy.');
     }
   };
 
@@ -422,7 +441,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       ) : (
         <video
           ref={videoRef}
-          src={room.media.url}
+          src={getVideoSourceUrl()}
+          crossOrigin="anonymous"
           poster={room.media.posterUrl}
           onLoadedMetadata={handleLoadedMetadata}
           onTimeUpdate={handleTimeUpdate}

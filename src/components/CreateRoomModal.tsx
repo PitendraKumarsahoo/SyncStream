@@ -28,17 +28,45 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({
   const [customUrl, setCustomUrl] = useState('');
   const [customTitle, setCustomTitle] = useState('');
   const [uploadedFileName, setUploadedFileName] = useState('');
-  const [uploadedObjectUrl, setUploadedObjectUrl] = useState('');
+  const [uploadedServerUrl, setUploadedServerUrl] = useState('');
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
 
   if (!isOpen) return null;
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const url = URL.createObjectURL(file);
-      setUploadedFileName(file.name);
-      setUploadedObjectUrl(url);
-      if (!name) setName(`Watch Party: ${file.name.replace(/\.[^/.]+$/, "")}`);
+    if (!file) return;
+
+    setUploadedFileName(file.name);
+    setIsUploading(true);
+    setUploadError('');
+
+    try {
+      const formData = new FormData();
+      formData.append('video', file);
+
+      const response = await fetch('/api/upload-video', {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!response.ok) {
+        throw new Error('Upload failed with status ' + response.status);
+      }
+
+      const data = await response.json();
+      if (data.success && data.url) {
+        setUploadedServerUrl(data.url);
+        if (!name) setName(`Watch Party: ${file.name.replace(/\.[^/.]+$/, "")}`);
+      } else {
+        throw new Error(data.error || 'Failed to upload video');
+      }
+    } catch (err: any) {
+      console.error('Video upload error:', err);
+      setUploadError('Failed to upload video to watch party server. Please try again or use a direct URL.');
+    } finally {
+      setIsUploading(false);
     }
   };
 
@@ -55,11 +83,11 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({
         duration: 300,
         posterUrl: 'https://images.unsplash.com/photo-1517604931442-7e0c8ed2963c?w=800&auto=format&fit=crop&q=80'
       };
-    } else if (mediaSourceType === 'upload' && uploadedObjectUrl) {
+    } else if (mediaSourceType === 'upload' && uploadedServerUrl) {
       media = {
         type: 'mp4',
-        url: uploadedObjectUrl,
-        title: uploadedFileName || 'Local Stream File',
+        url: uploadedServerUrl,
+        title: uploadedFileName ? uploadedFileName.replace(/\.[^/.]+$/, "") : 'Watch Party Shared Video',
         duration: 600,
         posterUrl: 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=800&auto=format&fit=crop&q=80'
       };
@@ -250,30 +278,50 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({
             {mediaSourceType === 'upload' && (
               <div className="border-2 border-dashed border-zinc-800 hover:border-indigo-500/50 bg-zinc-950 rounded-2xl p-6 text-center transition-colors">
                 <Upload className="w-8 h-8 text-indigo-400 mx-auto mb-2" />
-                <p className="text-xs font-semibold text-white">Upload or Drag & Drop local video</p>
-                <p className="text-[10px] text-zinc-500 mt-0.5">Supports MP4, WebM files</p>
+                <p className="text-xs font-semibold text-white">Upload video file to Watch Party Server</p>
+                <p className="text-[10px] text-zinc-500 mt-0.5">MP4, WebM (Uploaded to server so all friends can watch!)</p>
+                
                 <input
                   type="file"
                   accept="video/mp4,video/webm,video/*"
                   onChange={handleFileUpload}
+                  disabled={isUploading}
                   className="hidden"
                   id="file-upload-input"
                 />
+                
                 <label
                   htmlFor="file-upload-input"
-                  className="mt-3 inline-block px-4 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs text-white font-medium cursor-pointer transition-colors"
+                  className={`mt-3 inline-block px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer transition-all ${
+                    isUploading
+                      ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                      : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30'
+                  }`}
                 >
-                  Choose File
+                  {isUploading ? 'Uploading to Server...' : 'Choose Video File'}
                 </label>
-                {uploadedFileName && (
-                  <div className="mt-3">
-                    <p className="text-xs text-emerald-400 font-semibold flex items-center justify-center gap-1">
-                      <Check className="w-3.5 h-3.5" /> Selected: {uploadedFileName}
+
+                {isUploading && (
+                  <p className="text-xs text-indigo-400 font-medium mt-3 animate-pulse flex items-center justify-center gap-1.5">
+                    ⏳ Uploading video file to server, please wait...
+                  </p>
+                )}
+
+                {uploadedServerUrl && !isUploading && (
+                  <div className="mt-3 p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
+                    <p className="text-xs text-emerald-400 font-bold flex items-center justify-center gap-1">
+                      <Check className="w-4 h-4" /> Ready on Server: {uploadedFileName}
                     </p>
-                    <p className="text-[10px] text-amber-400 mt-1">
-                      💡 Tip: Local uploads play locally in your browser session. For watch parties with online friends across devices, featured movies or YouTube links work best!
+                    <p className="text-[10px] text-zinc-400 mt-1">
+                      ✅ Hosted on Watch Party server — all friends joining your link can watch seamlessly!
                     </p>
                   </div>
+                )}
+
+                {uploadError && (
+                  <p className="text-xs text-rose-400 font-semibold mt-3">
+                    ❌ {uploadError}
+                  </p>
                 )}
               </div>
             )}

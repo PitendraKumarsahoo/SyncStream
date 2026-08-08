@@ -1,7 +1,10 @@
 import express from "express";
 import http from "http";
+import https from "https";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
+import multer from "multer";
 import { Server as SocketIOServer } from "socket.io";
 import { createServer as createViteServer } from "vite";
 import { validateRoomPassword } from "./server/middleware/auth.js";
@@ -165,6 +168,124 @@ async function startServer() {
   });
 
   app.use(express.json());
+
+  // Set up video uploads directory
+  const uploadsDir = path.join(process.cwd(), "public", "uploads");
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+
+  const uploadStorage = multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      cb(null, uploadsDir);
+    },
+    filename: (_req, file, cb) => {
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      const ext = path.extname(file.originalname) || ".mp4";
+      cb(null, `${uniqueSuffix}${ext}`);
+    }
+  });
+
+  const upload = multer({
+    storage: uploadStorage,
+    limits: { fileSize: 500 * 1024 * 1024 } // 500MB
+  });
+
+  // Serve uploaded video files with range header support & CORS
+  app.use("/uploads", express.static(uploadsDir, {
+    acceptRanges: true,
+    setHeaders: (res) => {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+    }
+  }));
+
+  // Endpoint to upload local video files for watch parties
+  app.post("/api/upload-video", upload.single("video"), (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: "No video file provided." });
+    }
+    const fileUrl = `/uploads/${req.file.filename}`;
+    return res.json({
+      success: true,
+      url: fileUrl,
+      title: req.file.originalname.replace(/\.[^/.]+$/, ""),
+      filename: req.file.filename
+    });
+  });
+
+  // Stream proxy endpoint to bypass CORS and stream external URLs with Range support
+  app.get("/api/proxy-stream", (req, res) => {
+    const targetUrlStr = req.query.url as string;
+    if (!targetUrlStr) {
+      return res.status(400).send("Missing target url");
+    }
+
+    try {
+      const targetUrl = new URL(targetUrlStr);
+      const client = targetUrl.protocol === "https:" ? https : http;
+
+      const requestHeaders: Record<string, string> = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      };
+
+      if (req.headers.range) {
+        requestHeaders["Range"] = req.headers.range as string;
+      }
+
+      const proxyReq = client.request(
+        targetUrl,
+        {
+          method: "GET",
+          headers: requestHeaders
+        },
+        (proxyRes) => {
+          // Handle redirects automatically
+          if (
+            proxyRes.statusCode &&
+            [301, 302, 303, 307, 308].includes(proxyRes.statusCode) &&
+            proxyRes.headers.location
+          ) {
+            const redirectUrl = new URL(proxyRes.headers.location, targetUrlStr).toString();
+            return res.redirect(`/api/proxy-stream?url=${encodeURIComponent(redirectUrl)}`);
+          }
+
+          res.statusCode = proxyRes.statusCode || 200;
+
+          const headersToCopy = [
+            "content-type",
+            "content-length",
+            "content-range",
+            "accept-ranges",
+            "cache-control",
+            "last-modified"
+          ];
+
+          headersToCopy.forEach((header) => {
+            if (proxyRes.headers[header]) {
+              res.setHeader(header, proxyRes.headers[header] as string);
+            }
+          });
+
+          res.setHeader("Access-Control-Allow-Origin", "*");
+          res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+
+          proxyRes.pipe(res);
+        }
+      );
+
+      proxyReq.on("error", (err) => {
+        console.error("Proxy stream connection error:", err);
+        if (!res.headersSent) {
+          res.status(500).send("Error fetching remote stream via proxy.");
+        }
+      });
+
+      proxyReq.end();
+    } catch (_e) {
+      res.status(400).send("Invalid target URL provided.");
+    }
+  });
 
   // API Routes
   app.get("/api/health", (_req, res) => {

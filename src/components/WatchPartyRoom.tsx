@@ -42,27 +42,38 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
   const [copiedLink, setCopiedLink] = useState(false);
   const [customMediaUrl, setCustomMediaUrl] = useState('');
   const [customMediaTitle, setCustomMediaTitle] = useState('');
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  const lastEmitTimeRef = useRef<number>(0);
+  const isSyncingRef = useRef<boolean>(false);
 
   const isHost = room.hostId === currentUser?.id;
 
-  // Handler for video ref: explicitly listens to 'timeupdate' and 'seeking' events, emitting timestamps to server
+  // Handler for video ref: explicitly listens to 'timeupdate' and 'seeking' events, emitting timestamps to server with robust debouncing
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
+    // Throttle timeupdate pings to max once every 1000ms to prevent server spamming
     const handleTimeUpdate = () => {
-      if (!video.paused) {
-        socketService.getSocket().emit('playback:ping', {
-          roomId: room.id,
-          currentTime: video.currentTime,
-          isPlaying: true
-        });
+      if (!video.paused && !isSyncingRef.current) {
+        const now = Date.now();
+        if (now - lastEmitTimeRef.current >= 1000) {
+          lastEmitTimeRef.current = now;
+          socketService.getSocket().emit('playback:ping', {
+            roomId: room.id,
+            currentTime: video.currentTime,
+            isPlaying: true
+          });
+        }
       }
     };
 
     const handleSeeking = () => {
+      if (isSyncingRef.current) return;
+      lastEmitTimeRef.current = Date.now();
       socketService.getSocket().emit('playback:seeking', {
         roomId: room.id,
         currentTime: video.currentTime
@@ -78,19 +89,28 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
     };
   }, [room.id]);
 
-  // Ensure local video element updates currentTime only if delta between server time and local time > 0.5s
+  // Refined conditional sync logic comparing local currentTime against server time with jitter smoothing
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
+    // Calculate projected server currentTime accounting for network elapsed time
     const elapsed = (room.playback.isPlaying && room.playback.lastUpdated)
       ? Math.max(0, (Date.now() - room.playback.lastUpdated) / 1000)
       : 0;
     const serverTime = room.playback.currentTime + elapsed;
     const delta = Math.abs(video.currentTime - serverTime);
 
+    // Only update local currentTime if delta exceeds 0.5s to eliminate high-latency playback jitter
     if (delta > 0.5) {
+      isSyncingRef.current = true;
       video.currentTime = serverTime;
+      
+      const timer = setTimeout(() => {
+        isSyncingRef.current = false;
+      }, 200);
+
+      return () => clearTimeout(timer);
     }
   }, [room.playback.currentTime, room.playback.isPlaying, room.playback.lastUpdated]);
 
@@ -118,6 +138,47 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
       posterUrl: 'https://images.unsplash.com/photo-1517604931442-7e0c8ed2963c?w=800&auto=format&fit=crop&q=80'
     });
     setShowChangeMediaModal(false);
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    setUploadError('');
+
+    try {
+      const formData = new FormData();
+      formData.append('video', file);
+
+      const response = await fetch('/api/upload-video', {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!response.ok) {
+        throw new Error('Upload failed with status ' + response.status);
+      }
+
+      const data = await response.json();
+      if (data.success && data.url) {
+        onChangeMedia({
+          type: 'mp4',
+          url: data.url,
+          title: data.title || file.name.replace(/\.[^/.]+$/, ""),
+          duration: 300,
+          posterUrl: 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=800&auto=format&fit=crop&q=80'
+        });
+        setShowChangeMediaModal(false);
+      } else {
+        throw new Error(data.error || 'Failed to upload video');
+      }
+    } catch (err: any) {
+      console.error('Video upload error:', err);
+      setUploadError('Failed to upload video file to watch party server. Please try a smaller file or direct link.');
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   return (
@@ -337,6 +398,44 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
                     </div>
                   </div>
                 ))}
+              </div>
+            </div>
+
+            {/* File Upload to Watch Party Server */}
+            <div className="mb-4 pt-3 border-t border-zinc-800">
+              <h4 className="text-xs font-bold text-zinc-300 uppercase tracking-wider mb-2">Upload Local Video File to Party Server</h4>
+              <div className="p-4 rounded-2xl bg-zinc-950 border border-zinc-800 text-center">
+                <input
+                  type="file"
+                  accept="video/mp4,video/webm,video/*"
+                  onChange={handleFileUpload}
+                  disabled={isUploading}
+                  className="hidden"
+                  id="room-file-upload-input"
+                />
+                <label
+                  htmlFor="room-file-upload-input"
+                  className={`inline-block px-4 py-2 rounded-xl text-xs font-bold cursor-pointer transition-all ${
+                    isUploading
+                      ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                      : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30'
+                  }`}
+                >
+                  {isUploading ? 'Uploading Video to Server...' : 'Choose File to Upload & Stream'}
+                </label>
+                {isUploading && (
+                  <p className="text-xs text-indigo-400 font-semibold mt-2 animate-pulse">
+                    ⏳ Uploading video file to watch party server...
+                  </p>
+                )}
+                {uploadError && (
+                  <p className="text-xs text-rose-400 font-semibold mt-2">
+                    ❌ {uploadError}
+                  </p>
+                )}
+                <p className="text-[10px] text-zinc-500 mt-2">
+                  Uploaded files are hosted directly on the server so all friends joining can stream together!
+                </p>
               </div>
             </div>
 
