@@ -208,21 +208,74 @@ export default function App() {
       // If action was initiated by local user, local state was already updated optimistically
       if (payload.initiatedBy && payload.initiatedBy === userRef.current?.name) return;
 
-      setActiveRoom(prev => prev ? {
-        ...prev,
-        playback: {
-          ...prev.playback,
-          currentTime: payload.currentTime,
-          isPlaying: payload.isPlaying,
-          playbackRate: payload.playbackRate !== undefined ? payload.playbackRate : prev.playback.playbackRate,
-          lastUpdated: payload.serverTimestamp || Date.now()
+      const now = Date.now();
+      setActiveRoom(prev => {
+        if (!prev) return null;
+
+        const elapsed = prev.playback.isPlaying ? Math.max(0, (now - prev.playback.lastUpdated) / 1000) : 0;
+        const expectedTime = prev.playback.currentTime + elapsed * (prev.playback.playbackRate || 1.0);
+        const deviationMs = Math.abs((payload.currentTime - expectedTime) * 1000);
+
+        // Sync Conflict Detection: if host timestamp deviates by > 500ms from expected room timeline
+        const isConflict = deviationMs > 500;
+        const isSilentCorrection = isConflict && deviationMs < 3500;
+
+        if (isConflict) {
+          addNotification(
+            'Sync Conflict Resolved',
+            `Host timestamp ping deviated by ${Math.round(deviationMs)}ms. ${isSilentCorrection ? 'Applying silent playback alignment rate correction.' : 'Triggered hard jump resync.'}`,
+            'info'
+          );
         }
-      } : null);
+
+        return {
+          ...prev,
+          playback: {
+            ...prev.playback,
+            currentTime: payload.currentTime,
+            isPlaying: payload.isPlaying,
+            playbackRate: payload.playbackRate !== undefined ? payload.playbackRate : prev.playback.playbackRate,
+            lastUpdated: payload.serverTimestamp || now,
+            silentCorrection: isSilentCorrection
+          }
+        };
+      });
     });
 
     socket.on('playback:drift-check', (payload) => {
-      const calculatedDrift = Math.abs((Date.now() - payload.serverTimestamp) / 1000);
+      const now = Date.now();
+      const calculatedDrift = Math.abs((now - payload.serverTimestamp) / 1000);
       setSyncDrift(calculatedDrift);
+
+      // Sync Conflict Resolver for continuous background drift checks
+      setActiveRoom(prev => {
+        if (!prev || !prev.playback.isPlaying) return prev;
+
+        const elapsed = Math.max(0, (now - prev.playback.lastUpdated) / 1000);
+        const expectedTime = prev.playback.currentTime + elapsed * (prev.playback.playbackRate || 1.0);
+        const deviationMs = Math.abs((payload.currentTime - expectedTime) * 1000);
+
+        // Auto-correct if host's ping deviates by more than 500ms from estimated room time
+        if (deviationMs > 500) {
+          addNotification(
+            'Sync Conflict Resolved',
+            `Host ping deviated by ${Math.round(deviationMs)}ms. Performing silent correction.`,
+            'info'
+          );
+
+          return {
+            ...prev,
+            playback: {
+              ...prev.playback,
+              currentTime: payload.currentTime,
+              lastUpdated: now,
+              silentCorrection: true
+            }
+          };
+        }
+
+        return prev;
+      });
     });
 
     socket.on('room:media-changed', (payload) => {
@@ -293,6 +346,21 @@ export default function App() {
 
   // Host playback periodic ping to maintain exact time sync with throttled emission
   useEffect(() => {
+    const unsubscribeRejoin = socketService.onRejoin((rejoinedRoom: Room) => {
+      setActiveRoom(rejoinedRoom);
+      addNotification(
+        'Connection Restored',
+        `Reconnected to watch party "${rejoinedRoom.name}". Playback sync restored.`,
+        'info'
+      );
+    });
+
+    return () => {
+      unsubscribeRejoin();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!activeRoom || !user || activeRoom.hostId !== user.id) return;
 
     const interval = setInterval(() => {
@@ -322,6 +390,11 @@ export default function App() {
       user: { id: user.id, name: user.name, avatar: user.avatar }
     }, (res: any) => {
       if (res && res.success) {
+        socketService.setActiveRoom({
+          roomId: res.room.id,
+          password: roomData.password,
+          user: { id: user.id, name: user.name, avatar: user.avatar }
+        });
         setActiveRoom(res.room);
         setTab('room');
         const newUrl = `${window.location.origin}${window.location.pathname}?room=${res.room.id}`;
@@ -426,7 +499,7 @@ export default function App() {
   // Leave Watch Party
   const handleLeaveRoom = () => {
     if (activeRoom) {
-      socketRef.current.emit('room:leave', { roomId: activeRoom.id });
+      socketService.leaveRoom();
       setActiveRoom(null);
       setJoinModalRoom(null);
       setJoinModalError(null);
@@ -463,7 +536,7 @@ export default function App() {
       playbackRate: nextRate
     });
 
-    if (action === 'seek' || action === 'play' || action === 'pause') {
+    if (action === 'seek' || action === 'play' || action === 'pause' || action === 'rateChange') {
       socketRef.current.emit('playback:force-sync', {
         roomId: activeRoom.id,
         currentTime,

@@ -21,6 +21,7 @@ export interface Participant {
   isBuffering?: boolean;
   joinedAt: string;
   connectionQuality?: 'excellent' | 'good' | 'fair';
+  latencyMs?: number;
 }
 
 export interface ChatMessage {
@@ -49,6 +50,7 @@ export interface PlaybackState {
   currentTime: number;
   playbackRate: number;
   lastUpdated: number;
+  silentCorrection?: boolean;
 }
 
 export interface Room {

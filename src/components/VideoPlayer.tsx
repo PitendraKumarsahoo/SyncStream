@@ -79,9 +79,23 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
     const diff = Math.abs(video.currentTime - targetTime);
 
-    // Lock-step sync when drift is > 0.5 seconds
-    if (diff > 0.5) {
-      video.currentTime = targetTime;
+    // Sync Conflict Resolver: silent rate correction for drift > 500ms, hard jump for > 3s
+    if (diff > 0.5 || room.playback.silentCorrection) {
+      if (diff > 3.0) {
+        // Hard jump for large seeks or manual timeline scrubbing
+        video.currentTime = targetTime;
+      } else if (diff > 0.5) {
+        // Silent correction: temporarily adjust speed multiplier to close drift smoothly without audio/video stutter
+        const baseRate = room.playback.playbackRate || 1.0;
+        const speedNudge = video.currentTime < targetTime ? baseRate * 1.06 : Math.max(0.5, baseRate * 0.94);
+        video.playbackRate = speedNudge;
+
+        setTimeout(() => {
+          if (videoRef.current) {
+            videoRef.current.playbackRate = baseRate;
+          }
+        }, 1200);
+      }
     }
 
     if (room.playback.isPlaying) {
@@ -134,10 +148,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       }, 150);
     }
 
-    if (video.playbackRate !== room.playback.playbackRate) {
-      video.playbackRate = room.playback.playbackRate;
-      setPlaybackRate(room.playback.playbackRate);
+    const targetRate = room.playback.playbackRate || 1.0;
+    if (video.playbackRate !== targetRate) {
+      video.playbackRate = targetRate;
     }
+    setPlaybackRate(targetRate);
   }, [room.playback.currentTime, room.playback.isPlaying, room.playback.playbackRate, room.playback.lastUpdated, room.media.type, userHasUnlocked]);
 
   // Periodic heartbeat sync ping to keep room time live
@@ -527,6 +542,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
         {/* Sync Status Badge & Change Stream */}
         <div className="flex items-center gap-2">
+          {playbackRate !== 1.0 && (
+            <div className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs font-extrabold backdrop-blur-md">
+              <FastForward className="w-3 h-3 text-amber-400" />
+              <span>{playbackRate}x Speed</span>
+            </div>
+          )}
+
           <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 text-xs font-extrabold backdrop-blur-md">
             <Sparkles className="w-3.5 h-3.5" />
             <span>Synced ({syncDrift.toFixed(2)}s diff)</span>
@@ -646,14 +668,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
           {/* Right Speed & Fullscreen */}
           <div className="flex items-center gap-2">
-            {/* Speed Selector */}
-            <div className="hidden sm:flex items-center gap-1 bg-zinc-900/80 p-1 rounded-xl border border-zinc-800">
-              {[0.75, 1.0, 1.25, 1.5, 2.0].map((rate) => (
+            {/* Speed Selector (0.5x, 0.75x, 1x, 1.25x, 1.5x, 2x) */}
+            <div className="flex items-center gap-1 bg-zinc-900/90 p-1 rounded-xl border border-zinc-800 backdrop-blur-md overflow-x-auto max-w-[170px] sm:max-w-none no-scrollbar">
+              {[0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map((rate) => (
                 <button
                   key={rate}
                   onClick={() => handleRateChange(rate)}
-                  className={`px-2 py-0.5 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
-                    playbackRate === rate ? 'bg-indigo-600 text-white' : 'text-zinc-400 hover:text-white'
+                  title={`Set playback speed to ${rate}x for all members`}
+                  className={`px-2 py-0.5 rounded-lg text-[10px] font-bold transition-all cursor-pointer shrink-0 ${
+                    playbackRate === rate
+                      ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-600/50 scale-105'
+                      : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
                   }`}
                 >
                   {rate}x

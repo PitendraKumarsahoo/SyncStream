@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { X, Film, Lock, Globe, Upload, Sparkles, Check, Link as LinkIcon, Users, Play } from 'lucide-react';
 import { Room, MediaItem, User } from '../types';
 import { PRESET_MEDIA, CATEGORIES } from '../data/presetMedia';
-import { validateMediaUrl } from '../lib/mediaValidation';
+import { validateMediaUrl, uploadVideoWithProgress } from '../lib/mediaValidation';
 
 interface CreateRoomModalProps {
   isOpen: boolean;
@@ -31,6 +31,7 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({
   const [uploadedFileName, setUploadedFileName] = useState('');
   const [uploadedServerUrl, setUploadedServerUrl] = useState('');
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState('');
 
   if (!isOpen) return null;
@@ -41,35 +42,22 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({
 
     setUploadedFileName(file.name);
     setIsUploading(true);
+    setUploadProgress(0);
     setUploadError('');
 
-    try {
-      const formData = new FormData();
-      formData.append('video', file);
+    const res = await uploadVideoWithProgress(file, (percent) => {
+      setUploadProgress(percent);
+    });
 
-      const response = await fetch('/api/upload-video', {
-        method: 'POST',
-        body: formData
-      });
+    setIsUploading(false);
 
-      const data = await response.json().catch(() => null);
-
-      if (response.ok && data?.success && data?.url) {
-        setUploadedServerUrl(data.url);
-        setUploadError('');
-        if (!name) setName(`Watch Party: ${file.name.replace(/\.[^/.]+$/, "")}`);
-      } else {
-        const errDetail = data?.error || (response.status ? `Server status ${response.status}` : 'Upload failed');
-        console.warn('Server upload error:', errDetail);
-        setUploadedServerUrl('');
-        setUploadError(`Failed to upload video: ${errDetail}. Please ensure file is under 500MB or paste a direct video URL.`);
-      }
-    } catch (err: any) {
-      console.error('Video upload error:', err);
+    if (res.success && res.url) {
+      setUploadedServerUrl(res.url);
+      setUploadError('');
+      if (!name) setName(`Watch Party: ${file.name.replace(/\.[^/.]+$/, "")}`);
+    } else {
       setUploadedServerUrl('');
-      setUploadError('Failed to upload video to watch party server. Please check network connection or use a direct URL / Featured Movie.');
-    } finally {
-      setIsUploading(false);
+      setUploadError(res.error || 'Upload failed. Please check network or paste a direct video URL / select a Featured Movie.');
     }
   };
 
@@ -313,13 +301,21 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({
                       : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30'
                   }`}
                 >
-                  {isUploading ? 'Uploading to Server...' : 'Choose Video File'}
+                  {isUploading ? `Uploading... ${uploadProgress}%` : 'Choose Video File'}
                 </label>
 
                 {isUploading && (
-                  <p className="text-xs text-indigo-400 font-medium mt-3 animate-pulse flex items-center justify-center gap-1.5">
-                    ⏳ Uploading video file to server, please wait...
-                  </p>
+                  <div className="mt-3 space-y-1.5 max-w-md mx-auto">
+                    <div className="w-full bg-zinc-800 rounded-full h-2 overflow-hidden">
+                      <div
+                        className="bg-gradient-to-r from-indigo-500 to-violet-500 h-full transition-all duration-200"
+                        style={{ width: `${uploadProgress}%` }}
+                      />
+                    </div>
+                    <p className="text-xs text-indigo-400 font-medium flex items-center justify-center gap-1.5">
+                      ⏳ Uploading video file to watch party server: {uploadProgress}%
+                    </p>
+                  </div>
                 )}
 
                 {uploadedServerUrl && !isUploading && (

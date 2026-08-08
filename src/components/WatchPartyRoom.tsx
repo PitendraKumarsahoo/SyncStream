@@ -6,9 +6,10 @@ import { LiveChat } from './LiveChat';
 import { ParticipantsList } from './ParticipantsList';
 import { VoiceChat } from './VoiceChat';
 import { FloatingReactions } from './FloatingReactions';
+import { ActivityAuditLog } from './ActivityAuditLog';
 import { PRESET_MEDIA } from '../data/presetMedia';
 import { socketService } from '../lib/socket';
-import { validateMediaUrl } from '../lib/mediaValidation';
+import { validateMediaUrl, uploadVideoWithProgress, verifyMediaSourceHeaders } from '../lib/mediaValidation';
 
 interface WatchPartyRoomProps {
   room: Room;
@@ -37,13 +38,15 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
   onChangeMedia,
   syncDrift
 }) => {
-  const [activeSideTab, setActiveSideTab] = useState<'chat' | 'watchers'>('chat');
+  const [activeSideTab, setActiveSideTab] = useState<'chat' | 'watchers' | 'audit'>('chat');
   const [showShareModal, setShowShareModal] = useState(false);
   const [showChangeMediaModal, setShowChangeMediaModal] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [customMediaUrl, setCustomMediaUrl] = useState('');
   const [customMediaTitle, setCustomMediaTitle] = useState('');
   const [isUploading, setIsUploading] = useState(false);
+  const [isValidatingUrl, setIsValidatingUrl] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState('');
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -98,12 +101,23 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
     setTimeout(() => setCopiedLink(false), 2000);
   };
 
-  const handleSelectMedia = (media: Room['media']) => {
+  const handleSelectMedia = async (media: Room['media']) => {
+    setUploadError('');
+    setIsValidatingUrl(true);
+
+    const headerCheck = await verifyMediaSourceHeaders(media.url, 5000);
+    setIsValidatingUrl(false);
+
+    if (!headerCheck.isReachable) {
+      setUploadError(headerCheck.error || 'Unable to stream selected media source. HEAD request check failed.');
+      return;
+    }
+
     onChangeMedia(media);
     setShowChangeMediaModal(false);
   };
 
-  const handleCustomMediaSubmit = (e: React.FormEvent) => {
+  const handleCustomMediaSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setUploadError('');
 
@@ -113,9 +127,20 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
       return;
     }
 
+    const targetUrl = validation.url || customMediaUrl.trim();
+    setIsValidatingUrl(true);
+
+    const headerCheck = await verifyMediaSourceHeaders(targetUrl, 5000);
+    setIsValidatingUrl(false);
+
+    if (!headerCheck.isReachable) {
+      setUploadError(headerCheck.error || 'Media source check failed. URL may be broken, offline, or blocked by CORS.');
+      return;
+    }
+
     onChangeMedia({
       type: validation.type || 'mp4',
-      url: validation.url || customMediaUrl.trim(),
+      url: targetUrl,
       title: customMediaTitle.trim() || (validation.type === 'youtube' ? 'YouTube Stream' : 'Custom Video Stream'),
       duration: 300,
       posterUrl: validation.type === 'youtube'
@@ -132,44 +157,32 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
     if (!file) return;
 
     setIsUploading(true);
+    setUploadProgress(0);
     setUploadError('');
 
-    try {
-      const formData = new FormData();
-      formData.append('video', file);
+    const res = await uploadVideoWithProgress(file, (percent) => {
+      setUploadProgress(percent);
+    });
 
-      const response = await fetch('/api/upload-video', {
-        method: 'POST',
-        body: formData
-      });
+    setIsUploading(false);
 
-      const data = await response.json().catch(() => null);
-
-      if (response.ok && data?.success && data?.url) {
-        const validation = validateMediaUrl(data.url);
-        if (!validation.isValid) {
-          setUploadError(`Uploaded video URL validation failed: ${validation.error}`);
-          return;
-        }
-
-        onChangeMedia({
-          type: validation.type || 'mp4',
-          url: data.url,
-          title: data.title || file.name.replace(/\.[^/.]+$/, ""),
-          duration: 300,
-          posterUrl: 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=800&auto=format&fit=crop&q=80'
-        });
-        setShowChangeMediaModal(false);
-      } else {
-        const errDetail = data?.error || (response.status ? `Server status ${response.status}` : 'Upload failed');
-        console.warn('Server upload issue:', errDetail);
-        setUploadError(`Failed to upload video: ${errDetail}. Please ensure file is under 500MB or use a direct URL.`);
+    if (res.success && res.url) {
+      const validation = validateMediaUrl(res.url);
+      if (!validation.isValid) {
+        setUploadError(`Uploaded video URL validation failed: ${validation.error}`);
+        return;
       }
-    } catch (err: any) {
-      console.error('Video upload error:', err);
-      setUploadError('Failed to upload video to watch party server. Please check network connection or use a direct URL.');
-    } finally {
-      setIsUploading(false);
+
+      onChangeMedia({
+        type: validation.type || 'mp4',
+        url: res.url,
+        title: res.title || file.name.replace(/\.[^/.]+$/, ""),
+        duration: 300,
+        posterUrl: 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=800&auto=format&fit=crop&q=80'
+      });
+      setShowChangeMediaModal(false);
+    } else {
+      setUploadError(res.error || 'Failed to upload video to watch party server.');
     }
   };
 
@@ -277,29 +290,41 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
         <div className="lg:col-span-1 flex flex-col h-full space-y-4">
           
           {/* Side Tab Switcher */}
-          <div className="grid grid-cols-2 p-1 rounded-2xl bg-zinc-950 border border-zinc-800">
+          <div className="grid grid-cols-3 p-1 rounded-2xl bg-zinc-950 border border-zinc-800">
             <button
               onClick={() => setActiveSideTab('chat')}
-              className={`py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer ${
+              className={`py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                 activeSideTab === 'chat'
                   ? 'bg-indigo-600 text-white shadow-md'
                   : 'text-zinc-400 hover:text-white'
               }`}
             >
-              <MessageSquare className="w-4 h-4" />
-              Live Chat
+              <MessageSquare className="w-3.5 h-3.5" />
+              Chat
             </button>
 
             <button
               onClick={() => setActiveSideTab('watchers')}
-              className={`py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer ${
+              className={`py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                 activeSideTab === 'watchers'
                   ? 'bg-indigo-600 text-white shadow-md'
                   : 'text-zinc-400 hover:text-white'
               }`}
             >
-              <Users className="w-4 h-4" />
-              Watchers ({room.participants.length})
+              <Users className="w-3.5 h-3.5" />
+              People ({room.participants.length})
+            </button>
+
+            <button
+              onClick={() => setActiveSideTab('audit')}
+              className={`py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                activeSideTab === 'audit'
+                  ? 'bg-indigo-600 text-white shadow-md'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <Activity className="w-3.5 h-3.5" />
+              Audit Log
             </button>
           </div>
 
@@ -311,12 +336,18 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
                 onSendMessage={onSendMessage}
                 currentUser={currentUser}
               />
-            ) : (
+            ) : activeSideTab === 'watchers' ? (
               <ParticipantsList
                 participants={room.participants}
                 currentUserId={currentUser?.id}
                 isHost={isHost}
                 onTransferHost={onTransferHost}
+              />
+            ) : (
+              <ActivityAuditLog
+                room={room}
+                currentUser={currentUser}
+                socket={socketService.getSocket()}
               />
             )}
           </div>
@@ -413,12 +444,20 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
                       : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30'
                   }`}
                 >
-                  {isUploading ? 'Uploading Video to Server...' : 'Choose File to Upload & Stream'}
+                  {isUploading ? `Uploading... ${uploadProgress}%` : 'Choose File to Upload & Stream'}
                 </label>
                 {isUploading && (
-                  <p className="text-xs text-indigo-400 font-semibold mt-2 animate-pulse">
-                    ⏳ Uploading video file to watch party server...
-                  </p>
+                  <div className="mt-3 space-y-1.5 max-w-sm mx-auto">
+                    <div className="w-full bg-zinc-800 rounded-full h-2 overflow-hidden">
+                      <div
+                        className="bg-gradient-to-r from-indigo-500 to-violet-500 h-full transition-all duration-200"
+                        style={{ width: `${uploadProgress}%` }}
+                      />
+                    </div>
+                    <p className="text-xs text-indigo-400 font-semibold flex items-center justify-center gap-1.5">
+                      ⏳ Uploading video file to server: {uploadProgress}%
+                    </p>
+                  </div>
                 )}
                 {uploadError && (
                   <p className="text-xs text-rose-400 font-semibold mt-2">
@@ -459,9 +498,14 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold cursor-pointer"
+                  disabled={isValidatingUrl || isUploading}
+                  className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    isValidatingUrl || isUploading
+                      ? 'bg-indigo-900/50 text-indigo-300 cursor-not-allowed'
+                      : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30'
+                  }`}
                 >
-                  Update Video
+                  {isValidatingUrl ? 'Checking Source Headers...' : 'Update Video'}
                 </button>
               </div>
             </form>
