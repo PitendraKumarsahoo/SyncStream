@@ -64,9 +64,16 @@ export const ParticipantsList: React.FC<ParticipantsListProps> = ({
                       </span>
                     )}
                   </div>
-                  <p className="text-[10px] text-zinc-400">
-                    {p.isHost ? 'Party Host' : 'Watcher'}
-                  </p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-[10px] text-zinc-400">
+                      {p.isHost ? 'Party Host' : 'Watcher'}
+                    </p>
+                    {p.isBuffering && (
+                      <span className="text-[9px] font-medium text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20 animate-pulse">
+                        buffering...
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
 

@@ -27,6 +27,7 @@ interface Participant {
   isHost: boolean;
   isMuted: boolean;
   isDeafened: boolean;
+  isBuffering?: boolean;
   joinedAt: string;
 }
 
@@ -503,6 +504,23 @@ async function startServer() {
         socket.to(payload.roomId).emit("playback:drift-check", {
           currentTime: payload.currentTime,
           isPlaying: payload.isPlaying,
+          serverTimestamp: Date.now()
+        });
+      }
+    });
+
+    // Explicit seeking event from video listener
+    socket.on("playback:seeking", (payload: { roomId: string; currentTime: number }) => {
+      const room = rooms.get(payload.roomId);
+      if (!room) return;
+      const participant = room.participants.find(p => p.socketId === socket.id || p.id === currentUser?.id);
+      if (participant) {
+        room.playback.currentTime = payload.currentTime;
+        room.playback.lastUpdated = Date.now();
+
+        socket.to(payload.roomId).emit("playback:drift-check", {
+          currentTime: payload.currentTime,
+          isPlaying: room.playback.isPlaying,
           serverTimestamp: Date.now()
         });
       }

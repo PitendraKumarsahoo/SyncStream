@@ -11,6 +11,7 @@ interface VideoPlayerProps {
   onTriggerReaction: (emoji: string) => void;
   onChangeMediaModal: () => void;
   syncDrift: number;
+  videoRef?: React.RefObject<HTMLVideoElement>;
 }
 
 export const VideoPlayer: React.FC<VideoPlayerProps> = ({
@@ -19,9 +20,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   onControlPlayback,
   onTriggerReaction,
   onChangeMediaModal,
-  syncDrift
+  syncDrift,
+  videoRef: externalVideoRef
 }) => {
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const internalVideoRef = useRef<HTMLVideoElement>(null);
+  const videoRef = externalVideoRef || internalVideoRef;
   const containerRef = useRef<HTMLDivElement>(null);
   const isRemoteUpdateRef = useRef(false);
 
@@ -65,8 +68,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
     const diff = Math.abs(video.currentTime - targetTime);
 
-    // Lock-step sync when drift is > 0.4 seconds
-    if (diff > 0.4) {
+    // Lock-step sync when drift is > 0.5 seconds
+    if (diff > 0.5) {
       video.currentTime = targetTime;
     }
 

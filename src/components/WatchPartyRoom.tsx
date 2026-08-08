@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ArrowLeft, Share2, Copy, Check, Lock, Globe, Sparkles, RefreshCw, Radio, Layers, MessageSquare, Users } from 'lucide-react';
 import { Room, User, FloatingReaction, ChatMessage } from '../types';
 import { VideoPlayer } from './VideoPlayer';
@@ -43,7 +43,56 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
   const [customMediaUrl, setCustomMediaUrl] = useState('');
   const [customMediaTitle, setCustomMediaTitle] = useState('');
 
+  const videoRef = useRef<HTMLVideoElement>(null);
+
   const isHost = room.hostId === currentUser?.id;
+
+  // Handler for video ref: explicitly listens to 'timeupdate' and 'seeking' events, emitting timestamps to server
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const handleTimeUpdate = () => {
+      if (!video.paused) {
+        socketService.getSocket().emit('playback:ping', {
+          roomId: room.id,
+          currentTime: video.currentTime,
+          isPlaying: true
+        });
+      }
+    };
+
+    const handleSeeking = () => {
+      socketService.getSocket().emit('playback:seeking', {
+        roomId: room.id,
+        currentTime: video.currentTime
+      });
+    };
+
+    video.addEventListener('timeupdate', handleTimeUpdate);
+    video.addEventListener('seeking', handleSeeking);
+
+    return () => {
+      video.removeEventListener('timeupdate', handleTimeUpdate);
+      video.removeEventListener('seeking', handleSeeking);
+    };
+  }, [room.id]);
+
+  // Ensure local video element updates currentTime only if delta between server time and local time > 0.5s
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const elapsed = (room.playback.isPlaying && room.playback.lastUpdated)
+      ? Math.max(0, (Date.now() - room.playback.lastUpdated) / 1000)
+      : 0;
+    const serverTime = room.playback.currentTime + elapsed;
+    const delta = Math.abs(video.currentTime - serverTime);
+
+    if (delta > 0.5) {
+      video.currentTime = serverTime;
+    }
+  }, [room.playback.currentTime, room.playback.isPlaying, room.playback.lastUpdated]);
 
   const shareUrl = `${window.location.origin}${window.location.pathname}?room=${room.id}`;
 
@@ -145,6 +194,7 @@ export const WatchPartyRoom: React.FC<WatchPartyRoomProps> = ({
             onTriggerReaction={onTriggerFloatingReaction}
             onChangeMediaModal={() => setShowChangeMediaModal(true)}
             syncDrift={syncDrift}
+            videoRef={videoRef}
           />
 
           {/* WebRTC Voice Chat Bar */}
